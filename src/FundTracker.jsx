@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
-  PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, LineChart, Line,
+  ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import * as XLSX from "xlsx";
 import {
   Plus, Wallet, Receipt, LayoutDashboard, ChevronLeft, ChevronRight,
   Trash2, Save, Layers, Sparkles, Settings, X, TrendingUp, PiggyBank,
-  Pencil, Eye, EyeOff, Download,
+  Pencil, Eye, EyeOff, Download, History, Search, GitMerge,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -23,16 +23,16 @@ import {
 
 const STORAGE_KEY = "fundtracker:data:v3";
 
-// Identity palette — cool hues only, deliberately no green/amber/red
+// Identity palette — a distinct qualitative set (well-separated hues) for the
+// small fund markers (dots, allocation strip, filter chips). Charts don't use
+// these; they use the status/spent colours below, so slice-colour confusion is gone.
 const COLOR_POOL = [
-  "#6E92C4", "#8E7CC4", "#C77EA6", "#7C9AD9", "#A88BD0",
-  "#6F7FC0", "#B98AC0", "#5C84B5", "#9D7FB8", "#C490A8",
+  "#5B9BD5", "#B07CC6", "#E67FA0", "#5FB0A8", "#C9A14B",
+  "#7E86D6", "#D98C5F", "#83B85A", "#6CC2D6", "#C56B8A",
 ];
-// Neutral chart colours
-const C_SPENT = "#7FA8D9";   // "spent" series across charts
-const C_ALLOC = "#3D4843";   // allocated baseline bars
-const C_BUDGET = "#54625C";  // budget reference line
-const C_NONE = "#3A4540";    // inert / unallocated bar
+// Chart colours
+const C_SPENT = "#6EA8E0";   // "spent" series in charts (clear blue)
+const C_BUDGET = "#8A8F98";  // budget reference line (grey, dashed)
 
 const uid = (p = "") => p + Math.random().toString(36).slice(2, 9);
 function monthKeyOf(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`; }
@@ -51,7 +51,7 @@ function leftState(f) {
   if (f.base > 0 && f.remaining / f.base <= 0.2) return "low";
   return "ok";
 }
-const STATUS_BAR = { ok: "var(--ok)", low: "var(--warn)", over: "var(--over)", none: C_NONE };
+const STATUS_BAR = { ok: "var(--ok)", low: "var(--warn)", over: "var(--over)", none: "#3A4540" };
 
 /* ------------------------------------------------------------------ */
 export default function FundTracker() {
@@ -82,6 +82,7 @@ export default function FundTracker() {
 /* ------------------------------------------------------------------ */
 function App({ state, commit, monthKey, setMonthKey }) {
   const [showExport, setShowExport] = useState(false);
+  const [detailFund, setDetailFund] = useState(null);
   const cur = state.currency || "₹";
   const money = (n) => cur + " " + (Number(n) || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
   const colorOf = (i) => COLOR_POOL[i % COLOR_POOL.length];
@@ -138,24 +139,37 @@ function App({ state, commit, monthKey, setMonthKey }) {
   const updateFund = (id, patch) => { const n = structuredClone(state); n.funds = n.funds.map((f) => (f.id === id ? { ...f, ...patch } : f)); commit(n); };
   const removeFund = (id) => { const n = structuredClone(state); n.funds = n.funds.filter((f) => f.id !== id); Object.values(n.months).forEach((m) => { if (m.allocations) delete m.allocations[id]; }); commit(n); };
   const addExpense = (exp) => { const n = structuredClone(state); n.expenses.unshift({ id: uid("e_"), monthKey, ...exp }); commit(n); };
+  const updateExpense = (id, patch) => { const n = structuredClone(state); n.expenses = n.expenses.map((e) => (e.id === id ? { ...e, ...patch } : e)); commit(n); };
   const removeExpense = (id) => { const n = structuredClone(state); n.expenses = n.expenses.filter((e) => e.id !== id); commit(n); };
   const setCurrency = (sym) => { const n = structuredClone(state); n.currency = sym; commit(n); };
   const saveTemplate = (name) => { const n = structuredClone(state); n.configs.push({ id: uid("tpl_"), name, allocations: { ...(month.allocations || {}) } }); commit(n); };
   const applyTemplate = (tpl) => { const n = ensureMonth(structuredClone(state)); const valid = {}; Object.entries(tpl.allocations).forEach(([fid, amt]) => { if (n.funds.some((f) => f.id === fid)) valid[fid] = amt; }); n.months[monthKey].allocations = valid; commit(n); };
   const deleteTemplate = (id) => { const n = structuredClone(state); n.configs = n.configs.filter((c) => c.id !== id); commit(n); };
+  const mergeFund = (fromId, toId) => {
+    if (!fromId || !toId || fromId === toId) return;
+    const n = structuredClone(state);
+    n.expenses = n.expenses.map((e) => (e.fundId === fromId ? { ...e, fundId: toId } : e));
+    Object.values(n.months).forEach((m) => { if (m.allocations && m.allocations[fromId] != null) { m.allocations[toId] = (m.allocations[toId] || 0) + m.allocations[fromId]; delete m.allocations[fromId]; } });
+    n.configs.forEach((c) => { if (c.allocations && c.allocations[fromId] != null) { c.allocations[toId] = (c.allocations[toId] || 0) + c.allocations[fromId]; delete c.allocations[fromId]; } });
+    n.funds = n.funds.filter((f) => f.id !== fromId);
+    commit(n);
+  };
+  const restoreState = (incoming) => { commit(incoming); };
 
   return (
     <div className="ft-root">
       <Style />
       <TopBar monthKey={monthKey} setMonthKey={setMonthKey} budget={month.budget} setBudget={setBudget}
         unallocated={unallocated} totalSpent={totalSpent} money={money} currency={cur} setCurrency={setCurrency}
-        funds={fundView} budgetNum={Number(month.budget || 0)} openExport={() => setShowExport(true)} />
+        funds={fundView} budgetNum={Number(month.budget || 0)} openExport={() => setShowExport(true)}
+        fullState={state} onRestore={restoreState} />
 
       <div className="ft-grid">
         <section className="ft-col">
           <SectionHead icon={<Wallet size={15} />} title="Funds" />
           <FundsPanel funds={fundView} unallocated={unallocated} money={money}
-            addFund={addFund} updateFund={updateFund} removeFund={removeFund}
+            addFund={addFund} updateFund={updateFund} removeFund={removeFund} mergeFund={mergeFund}
+            onOpenDetail={setDetailFund}
             templates={state.configs} saveTemplate={saveTemplate} applyTemplate={applyTemplate}
             deleteTemplate={deleteTemplate} setAllocation={setAllocation} />
         </section>
@@ -168,25 +182,58 @@ function App({ state, commit, monthKey, setMonthKey }) {
 
         <section className="ft-col">
           <SectionHead icon={<Receipt size={15} />} title="Expenses" />
-          <ExpensesPanel funds={fundsColored} expenses={monthExpenses} money={money} addExpense={addExpense} removeExpense={removeExpense} monthKey={monthKey} />
+          <ExpensesPanel
+            availableFunds={fundView.filter((f) => f.base > 0 || f.spent > 0)}
+            fundLookup={Object.fromEntries(fundsColored.map((f) => [f.id, { name: f.name, color: f.color }]))}
+            expenses={monthExpenses} money={money}
+            addExpense={addExpense} updateExpense={updateExpense} removeExpense={removeExpense} monthKey={monthKey} />
         </section>
       </div>
 
       {showExport && (
         <ExportModal funds={fundsColored} months={state.months} allExpenses={state.expenses} money={money} monthKey={monthKey} onClose={() => setShowExport(false)} />
       )}
+      {detailFund && (
+        <FundDetailModal fund={detailFund} allExpenses={state.expenses} months={state.months} money={money} onClose={() => setDetailFund(null)} />
+      )}
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-function TopBar({ monthKey, setMonthKey, budget, setBudget, unallocated, totalSpent, money, currency, setCurrency, funds, budgetNum, openExport }) {
+function TopBar({ monthKey, setMonthKey, budget, setBudget, unallocated, totalSpent, money, currency, setCurrency, funds, budgetNum, openExport, fullState, onRestore }) {
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState(budget);
   const [showSet, setShowSet] = useState(false);
+  const [restoreMsg, setRestoreMsg] = useState("");
+  const fileRef = React.useRef(null);
   useEffect(() => setVal(budget), [budget, monthKey]);
   const allocated = funds.filter((f) => f.alloc > 0);
   const denom = Math.max(budgetNum, funds.reduce((s, f) => s + f.alloc, 0)) || 1;
+
+  const downloadBackup = () => {
+    const blob = new Blob([JSON.stringify(fullState, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `fund-tracker-backup_${new Date().toISOString().slice(0, 10)}.json`; a.click();
+    URL.revokeObjectURL(url);
+  };
+  const onFile = (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        const ok = data && Array.isArray(data.funds) && Array.isArray(data.expenses) && data.months && typeof data.months === "object";
+        if (!ok) { setRestoreMsg("That file doesn't look like a Fund Tracker backup."); return; }
+        if (window.confirm("Restore will REPLACE all current data with the backup. Continue?")) {
+          onRestore(data); setRestoreMsg("Restored successfully."); setShowSet(false);
+        }
+      } catch { setRestoreMsg("Couldn't read that file — is it a valid backup?"); }
+      finally { if (fileRef.current) fileRef.current.value = ""; }
+    };
+    reader.readAsText(file);
+  };
 
   return (
     <header className="ft-top">
@@ -228,9 +275,19 @@ function TopBar({ monthKey, setMonthKey, budget, setBudget, unallocated, totalSp
 
       {showSet && (
         <Modal title="Settings" onClose={() => setShowSet(false)}>
-          <label className="ft-field-label">Currency symbol</label>
+          <label className="ft-field-label" style={{ marginTop: 0 }}>Currency symbol</label>
           <input className="ft-input" value={currency} maxLength={3} onChange={(e) => setCurrency(e.target.value)} />
-          <p className="ft-muted" style={{ marginTop: 12, fontSize: 13 }}>Funds appear in every month. Use the arrows to set each month's budget and allocations; everything saves automatically.</p>
+
+          <label className="ft-field-label">Backup &amp; restore</label>
+          <p className="ft-muted" style={{ fontSize: 12.5, margin: "0 0 8px" }}>Download a copy of all your data, or restore from a previous backup file. Keep a backup somewhere safe.</p>
+          <div className="ft-row" style={{ gap: 8 }}>
+            <button className="ft-btn ft-btn-sm" onClick={downloadBackup}><Download size={13} /> Download backup</button>
+            <button className="ft-btn ft-btn-sm" onClick={() => fileRef.current?.click()}><History size={13} /> Restore from file</button>
+            <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }} onChange={onFile} />
+          </div>
+          {restoreMsg && <p className="ft-hint" style={{ color: restoreMsg.includes("success") ? "var(--ok)" : "var(--over)" }}>{restoreMsg}</p>}
+
+          <p className="ft-muted" style={{ marginTop: 14, fontSize: 12.5 }}>Funds appear in every month. Everything saves automatically.</p>
         </Modal>
       )}
     </header>
@@ -238,7 +295,7 @@ function TopBar({ monthKey, setMonthKey, budget, setBudget, unallocated, totalSp
 }
 
 /* ------------------------------------------------------------------ */
-function FundsPanel({ funds, unallocated, money, addFund, updateFund, removeFund, templates, saveTemplate, applyTemplate, deleteTemplate, setAllocation }) {
+function FundsPanel({ funds, unallocated, money, addFund, updateFund, removeFund, mergeFund, onOpenDetail, templates, saveTemplate, applyTemplate, deleteTemplate, setAllocation }) {
   const [modal, setModal] = useState(null);
   const [showAll, setShowAll] = useState(false);
   const active = funds.filter((f) => f.base > 0 || f.spent > 0);
@@ -266,6 +323,7 @@ function FundsPanel({ funds, unallocated, money, addFund, updateFund, removeFund
               <div className="ft-fund-top">
                 <span className="ft-fund-name"><i className="ft-dot" style={{ background: f.color }} />{f.name}{f.accumulating && <PiggyBank size={11} className="ft-accum-ic" />}</span>
                 <span className="ft-fund-tools">
+                  <button className="ft-icon-btn ft-icon-mini" onClick={() => onOpenDetail(f)} aria-label="Fund history"><History size={11} /></button>
                   <button className="ft-icon-btn ft-icon-mini" onClick={() => setModal({ edit: f })} aria-label="Edit"><Pencil size={11} /></button>
                   <button className="ft-icon-btn ft-icon-mini" onClick={() => removeFund(f.id)} aria-label="Delete"><Trash2 size={12} /></button>
                 </span>
@@ -296,6 +354,9 @@ function FundsPanel({ funds, unallocated, money, addFund, updateFund, removeFund
 
       {(modal === "add" || (modal && modal.edit)) && (
         <FundModal mode={modal === "add" ? "add" : "edit"} initial={modal && modal.edit ? modal.edit : null} unallocated={unallocated} money={money}
+          existingNames={funds.filter((f) => !(modal && modal.edit) || f.id !== modal.edit.id).map((f) => f.name.trim().toLowerCase())}
+          mergeTargets={modal && modal.edit ? funds.filter((f) => f.id !== modal.edit.id) : []}
+          onMerge={(toId) => { mergeFund(modal.edit.id, toId); setModal(null); }}
           onSubmit={(d) => { if (modal === "add") addFund(d); else updateFund(modal.edit.id, { name: d.name, accumulating: d.accumulating }); setModal(null); }} onClose={() => setModal(null)} />
       )}
       {modal === "tpl" && (
@@ -311,15 +372,23 @@ function AllocInput({ value, onCommit }) {
   return <input className="ft-input ft-input-tiny" type="number" value={v} onChange={(e) => setV(e.target.value)} onBlur={() => onCommit(Number(v) || 0)} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />;
 }
 
-function FundModal({ mode, initial, unallocated, money, onSubmit, onClose }) {
+function FundModal({ mode, initial, unallocated, money, onSubmit, onClose, existingNames = [], mergeTargets = [], onMerge }) {
   const [name, setName] = useState(initial?.name || "");
   const [allocated, setAllocated] = useState("");
   const [accumulating, setAccumulating] = useState(!!initial?.accumulating);
+  const [mergeId, setMergeId] = useState("");
+  const dup = name.trim() && existingNames.includes(name.trim().toLowerCase());
   const submit = () => { if (!name.trim()) return; onSubmit({ name: name.trim(), accumulating, allocated: Number(allocated) || 0 }); };
+  const doMerge = () => {
+    if (!mergeId) return;
+    const target = mergeTargets.find((f) => f.id === mergeId);
+    if (window.confirm(`Merge "${initial.name}" into "${target?.name}"? All its expenses and allocations move over, and "${initial.name}" is removed. This can't be undone.`)) onMerge(mergeId);
+  };
   return (
     <Modal title={mode === "add" ? "New fund" : "Edit fund"} onClose={onClose}>
-      <label className="ft-field-label">Name</label>
+      <label className="ft-field-label" style={{ marginTop: 0 }}>Name</label>
       <input className="ft-input" value={name} autoFocus placeholder="e.g. Groceries" onChange={(e) => setName(e.target.value)} />
+      {dup && <p className="ft-hint" style={{ color: "var(--warn)" }}>A fund named "{name.trim()}" already exists. Funds carry across every month, so you usually don't need a new one — just allocate to the existing fund this month.</p>}
       {mode === "add" && (
         <>
           <label className="ft-field-label">Allocated this month</label>
@@ -330,8 +399,22 @@ function FundModal({ mode, initial, unallocated, money, onSubmit, onClose }) {
       <label className="ft-check"><input type="checkbox" checked={accumulating} onChange={(e) => setAccumulating(e.target.checked)} />This fund accumulates — unspent balance carries forward automatically</label>
       <div className="ft-modal-actions">
         <button className="ft-btn" onClick={onClose}>Cancel</button>
-        <button className="ft-btn ft-btn-primary" onClick={submit} disabled={!name.trim()}>{mode === "add" ? "Add fund" : "Save"}</button>
+        <button className="ft-btn ft-btn-primary" onClick={submit} disabled={!name.trim() || (mode === "add" && dup)}>{mode === "add" ? "Add fund" : "Save"}</button>
       </div>
+
+      {mode === "edit" && mergeTargets.length > 0 && (
+        <div className="ft-merge">
+          <div className="ft-subhead"><GitMerge size={12} /> Merge into another fund</div>
+          <p className="ft-hint" style={{ marginTop: 0 }}>Use this to fold a duplicate into the fund you want to keep — expenses and allocations move over, nothing is lost.</p>
+          <div className="ft-row" style={{ gap: 8 }}>
+            <select className="ft-input ft-input-sm" value={mergeId} onChange={(e) => setMergeId(e.target.value)}>
+              <option value="">Choose a fund…</option>
+              {mergeTargets.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+            <button className="ft-btn ft-btn-sm" onClick={doMerge} disabled={!mergeId}><GitMerge size={13} /> Merge</button>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }
@@ -379,10 +462,10 @@ function ExportModal({ funds, months, allExpenses, money, monthKey, onClose }) {
     const wb = XLSX.utils.book_new();
 
     // Expenses (detail) + total row
-    const expRows = inRange.map((e) => ({ Date: e.date, Day: WD[dow(e.date)], Expense: e.name, Fund: nameById[e.fundId] || "(deleted fund)", Amount: Number(e.amount) }));
+    const expRows = inRange.map((e) => ({ Date: e.date, Day: WD[dow(e.date)], Expense: e.name, Fund: nameById[e.fundId] || "(deleted fund)", Amount: Number(e.amount), Note: e.note || "" }));
     expRows.push({}); expRows.push({ Date: "", Day: "", Expense: "", Fund: "TOTAL", Amount: total });
-    const wsExp = XLSX.utils.json_to_sheet(expRows, { header: ["Date", "Day", "Expense", "Fund", "Amount"] });
-    wsExp["!cols"] = [{ wch: 12 }, { wch: 11 }, { wch: 28 }, { wch: 18 }, { wch: 14 }];
+    const wsExp = XLSX.utils.json_to_sheet(expRows, { header: ["Date", "Day", "Expense", "Fund", "Amount", "Note"] });
+    wsExp["!cols"] = [{ wch: 12 }, { wch: 11 }, { wch: 28 }, { wch: 18 }, { wch: 14 }, { wch: 30 }];
     XLSX.utils.book_append_sheet(wb, wsExp, "Expenses");
 
     // By fund
@@ -450,7 +533,7 @@ function ExportModal({ funds, months, allExpenses, money, monthKey, onClose }) {
 }
 
 /* ------------------------------------------------------------------ */
-function ExpensesPanel({ funds, expenses, money, addExpense, removeExpense, monthKey }) {
+function ExpensesPanel({ availableFunds, fundLookup, expenses, money, addExpense, updateExpense, removeExpense, monthKey }) {
   const [y, m] = monthKey.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
   const minDate = `${monthKey}-01`;
@@ -459,64 +542,230 @@ function ExpensesPanel({ funds, expenses, money, addExpense, removeExpense, mont
 
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
-  const [fundId, setFundId] = useState(funds[0]?.id || "");
+  const [note, setNote] = useState("");
+  const [fundId, setFundId] = useState(availableFunds[0]?.id || "");
   const [date, setDate] = useState(defaultDate());
-  useEffect(() => { if (!funds.find((f) => f.id === fundId)) setFundId(funds[0]?.id || ""); }, [funds]); // eslint-disable-line
-  useEffect(() => { setDate(defaultDate()); }, [monthKey]); // eslint-disable-line
+  const [editing, setEditing] = useState(null);
+  const [selected, setSelected] = useState(null); // null = all funds shown
+  const [sort, setSort] = useState("date_desc");
+  const [query, setQuery] = useState("");
+
+  useEffect(() => { if (!availableFunds.find((f) => f.id === fundId)) setFundId(availableFunds[0]?.id || ""); }, [availableFunds]); // eslint-disable-line
+  useEffect(() => { setDate(defaultDate()); setSelected(null); }, [monthKey]); // eslint-disable-line
 
   const submit = () => {
     if (!name.trim() || !amount || !fundId) return;
-    const safe = date < minDate ? minDate : date > maxDate ? maxDate : date; // keep inside the month
-    addExpense({ name: name.trim(), amount: Number(amount), fundId, date: safe });
-    setName(""); setAmount("");
+    const safe = date < minDate ? minDate : date > maxDate ? maxDate : date;
+    addExpense({ name: name.trim(), amount: Number(amount), fundId, date: safe, note: note.trim() });
+    setName(""); setAmount(""); setNote("");
   };
-  const fundById = {}; funds.forEach((f) => (fundById[f.id] = f));
+
+  // search then group
+  const q = query.trim().toLowerCase();
+  const filtered = q ? expenses.filter((e) => (e.name || "").toLowerCase().includes(q) || (e.note || "").toLowerCase().includes(q)) : expenses;
+  const gmap = {};
+  filtered.forEach((e) => { (gmap[e.fundId] = gmap[e.fundId] || []).push(e); });
+  const cmp = {
+    date_desc: (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0),
+    date_asc: (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0),
+    amt_desc: (a, b) => Number(b.amount) - Number(a.amount),
+    amt_asc: (a, b) => Number(a.amount) - Number(b.amount),
+  }[sort];
+  let groups = Object.entries(gmap).map(([fid, items]) => {
+    const info = fundLookup[fid] || { name: "(deleted fund)", color: "#666" };
+    return { fid, name: info.name, color: info.color, items: [...items].sort(cmp), total: items.reduce((s, e) => s + Number(e.amount), 0), count: items.length };
+  }).sort((a, b) => b.total - a.total);
+
+  const allFids = groups.map((g) => g.fid);
+  const allOn = selected === null;
+  const isSel = (fid) => allOn || selected.has(fid);
+  const toggleFund = (fid) => setSelected((prev) => {
+    const cur = prev === null ? new Set(allFids) : new Set(prev);
+    if (cur.has(fid)) cur.delete(fid); else cur.add(fid);
+    return cur.size === allFids.length ? null : cur;
+  });
+  const shownGroups = groups.filter((g) => isSel(g.fid));
 
   return (
     <div className="ft-panel">
       <div className="ft-addexp">
-        {funds.length === 0 ? <div className="ft-empty">Create a fund before adding expenses.</div> : (
+        {availableFunds.length === 0 ? <div className="ft-empty">No funds are allocated this month. Allocate a fund in the Funds section, then log expenses here.</div> : (
           <>
             <input className="ft-input ft-input-sm" placeholder="What was it for?" value={name} onChange={(e) => setName(e.target.value)} />
             <div className="ft-row">
               <input className="ft-input ft-input-sm" type="number" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} />
               <input className="ft-input ft-input-sm" type="date" value={date} min={minDate} max={maxDate} onChange={(e) => setDate(e.target.value)} title="Date is limited to the selected month" />
             </div>
+            <input className="ft-input ft-input-sm" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
             <div className="ft-row">
-              <select className="ft-input ft-input-sm" value={fundId} onChange={(e) => setFundId(e.target.value)}>{funds.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
+              <select className="ft-input ft-input-sm" value={fundId} onChange={(e) => setFundId(e.target.value)}>{availableFunds.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
               <button className="ft-btn ft-btn-primary ft-btn-sm" onClick={submit}><Plus size={14} /> Add</button>
             </div>
           </>
         )}
       </div>
-      <div className="ft-exp-list">
-        {expenses.length === 0 && <div className="ft-empty">No expenses logged this month.</div>}
-        {expenses.map((e) => {
-          const fund = fundById[e.fundId];
-          return (
-            <div key={e.id} className="ft-exp">
-              <span className="ft-dot" style={{ background: fund?.color || "#666" }} />
-              <div className="ft-exp-mid"><span className="ft-exp-name">{e.name}</span><span className="ft-muted ft-exp-meta">{fund ? fund.name : "—"} · {e.date.slice(5)}</span></div>
-              <span className="ft-exp-amt">{money(e.amount)}</span>
-              <button className="ft-icon-btn ft-icon-mini" onClick={() => removeExpense(e.id)} aria-label="Delete"><X size={12} /></button>
+
+      {expenses.length === 0 ? <div className="ft-empty">No expenses logged this month.</div> : (
+        <>
+          <div className="ft-search">
+            <Search size={14} className="ft-search-ic" />
+            <input className="ft-input ft-input-sm ft-search-in" placeholder="Search name or note…" value={query} onChange={(e) => setQuery(e.target.value)} />
+            {query && <button className="ft-icon-btn ft-icon-mini" onClick={() => setQuery("")} aria-label="Clear search"><X size={12} /></button>}
+          </div>
+
+          <div className="ft-exp-controls">
+            <div className="ft-chips">
+              <button className={"ft-chipbtn" + (allOn ? " on" : "")} onClick={() => setSelected(null)}>All</button>
+              {groups.map((g) => (
+                <button key={g.fid} className={"ft-chipbtn" + (isSel(g.fid) ? " on" : "")} onClick={() => toggleFund(g.fid)}>
+                  <i style={{ background: g.color }} />{g.name}
+                </button>
+              ))}
             </div>
-          );
-        })}
-      </div>
+            <select className="ft-input ft-input-sm ft-sort" value={sort} onChange={(e) => setSort(e.target.value)}>
+              <option value="date_desc">Newest first</option>
+              <option value="date_asc">Oldest first</option>
+              <option value="amt_desc">Highest amount</option>
+              <option value="amt_asc">Lowest amount</option>
+            </select>
+          </div>
+
+          <div className="ft-exp-groups">
+            {filtered.length === 0 && <div className="ft-empty">No expenses match "{query}".</div>}
+            {filtered.length > 0 && shownGroups.length === 0 && <div className="ft-empty">No funds selected.</div>}
+            {shownGroups.map((g) => (
+              <div key={g.fid} className="ft-exp-group">
+                <div className="ft-exp-grouphead">
+                  <span className="ft-fund-name"><i className="ft-dot" style={{ background: g.color }} />{g.name}<span className="ft-muted" style={{ fontWeight: 400 }}> · {g.count}</span></span>
+                  <strong>{money(g.total)}</strong>
+                </div>
+                {g.items.map((e) => (
+                  <div key={e.id} className="ft-exp">
+                    <div className="ft-exp-mid">
+                      <span className="ft-exp-name">{e.name}</span>
+                      {e.note && <span className="ft-exp-note">{e.note}</span>}
+                      <span className="ft-muted ft-exp-meta">{e.date.slice(5)}</span>
+                    </div>
+                    <span className="ft-exp-amt">{money(e.amount)}</span>
+                    <button className="ft-icon-btn ft-icon-mini" onClick={() => setEditing(e)} aria-label="Edit"><Pencil size={11} /></button>
+                    <button className="ft-icon-btn ft-icon-mini" onClick={() => removeExpense(e.id)} aria-label="Delete"><X size={12} /></button>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {editing && (
+        <ExpenseEditModal expense={editing} availableFunds={availableFunds} fundLookup={fundLookup} minDate={minDate} maxDate={maxDate}
+          onSave={(patch) => { updateExpense(editing.id, patch); setEditing(null); }} onClose={() => setEditing(null)} />
+      )}
     </div>
+  );
+}
+
+function ExpenseEditModal({ expense, availableFunds, fundLookup, minDate, maxDate, onSave, onClose }) {
+  const [name, setName] = useState(expense.name);
+  const [amount, setAmount] = useState(expense.amount);
+  const [fundId, setFundId] = useState(expense.fundId);
+  const [date, setDate] = useState(expense.date);
+  const [note, setNote] = useState(expense.note || "");
+
+  const opts = [...availableFunds];
+  if (!opts.find((f) => f.id === expense.fundId)) {
+    const info = fundLookup[expense.fundId];
+    opts.unshift({ id: expense.fundId, name: (info?.name || "(deleted fund)") + " — not in this month" });
+  }
+  const save = () => {
+    if (!name.trim() || !amount || !fundId) return;
+    const safe = date < minDate ? minDate : date > maxDate ? maxDate : date;
+    onSave({ name: name.trim(), amount: Number(amount), fundId, date: safe, note: note.trim() });
+  };
+  return (
+    <Modal title="Edit expense" onClose={onClose}>
+      <label className="ft-field-label" style={{ marginTop: 0 }}>Name</label>
+      <input className="ft-input" value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+      <div className="ft-row" style={{ gap: 10 }}>
+        <div style={{ flex: 1 }}><label className="ft-field-label">Amount</label><input className="ft-input" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div>
+        <div style={{ flex: 1 }}><label className="ft-field-label">Date</label><input className="ft-input" type="date" value={date} min={minDate} max={maxDate} onChange={(e) => setDate(e.target.value)} /></div>
+      </div>
+      <label className="ft-field-label">Fund</label>
+      <select className="ft-input" value={fundId} onChange={(e) => setFundId(e.target.value)}>{opts.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
+      <label className="ft-field-label">Note</label>
+      <input className="ft-input" value={note} placeholder="Optional context" onChange={(e) => setNote(e.target.value)} />
+      <div className="ft-modal-actions">
+        <button className="ft-btn" onClick={onClose}>Cancel</button>
+        <button className="ft-btn ft-btn-primary" onClick={save} disabled={!name.trim() || !amount}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* Drill-in: one fund's spend (and allocation) across months, with a mini chart. */
+function FundDetailModal({ fund, allExpenses, months, money, onClose }) {
+  const keys = new Set(Object.keys(months));
+  allExpenses.forEach((e) => { if (e.fundId === fund.id) keys.add(e.monthKey); });
+  const short = (k) => { const [yy, mm] = k.split("-"); return new Date(Number(yy), Number(mm) - 1, 1).toLocaleString(undefined, { month: "short" }) + " " + yy.slice(2); };
+  const series = [...keys].sort().slice(-12).map((k) => ({
+    name: short(k),
+    Spent: allExpenses.filter((e) => e.fundId === fund.id && e.monthKey === k).reduce((s, e) => s + Number(e.amount), 0),
+    Allocated: Number(months[k]?.allocations?.[fund.id] || 0),
+  }));
+  const total = allExpenses.filter((e) => e.fundId === fund.id).reduce((s, e) => s + Number(e.amount), 0);
+  const activeMonths = series.filter((s) => s.Spent > 0);
+  const avg = activeMonths.length ? Math.round(activeMonths.reduce((s, m) => s + m.Spent, 0) / activeMonths.length) : 0;
+  const highest = series.reduce((a, b) => (b.Spent > (a?.Spent || 0) ? b : a), null);
+  // trend: last active month vs average
+  const last = activeMonths[activeMonths.length - 1];
+  let trendMsg = null;
+  if (activeMonths.length >= 3 && avg > 0 && last) {
+    const diff = Math.round(((last.Spent - avg) / avg) * 100);
+    if (Math.abs(diff) >= 15) trendMsg = `Latest month is ${Math.abs(diff)}% ${diff > 0 ? "above" : "below"} its average — ${diff > 0 ? "creeping up" : "easing off"}.`;
+  }
+
+  return (
+    <Modal title={fund.name} onClose={onClose}>
+      <div className="ft-fd-stats">
+        <div><span className="ft-stat-label">Total spent</span><strong>{money(total)}</strong></div>
+        <div><span className="ft-stat-label">Avg / active month</span><strong>{money(avg)}</strong></div>
+        <div><span className="ft-stat-label">Highest month</span><strong>{highest && highest.Spent > 0 ? `${money(highest.Spent)} (${highest.name})` : "—"}</strong></div>
+      </div>
+      {series.length === 0 || total === 0 ? (
+        <p className="ft-muted" style={{ fontSize: 13 }}>No spending recorded for this fund yet.</p>
+      ) : (
+        <ResponsiveContainer width="100%" height={190}>
+          <ComposedChart data={series} margin={{ top: 8, right: 8, left: -14, bottom: 0 }}>
+            <defs>
+              <linearGradient id="ftFdFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--spent)" stopOpacity={0.35} />
+                <stop offset="100%" stopColor="var(--spent)" stopOpacity={0.03} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+            <XAxis dataKey="name" tick={{ fontSize: 10, fill: "var(--muted)" }} />
+            <YAxis tick={{ fontSize: 10, fill: "var(--muted)" }} width={40} tickFormatter={(v) => (v >= 1000 ? Math.round(v / 100) / 10 + "k" : v)} />
+            <Tooltip formatter={(v) => money(v)} contentStyle={TOOLTIP} />
+            <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+            <Area type="monotone" dataKey="Spent" stroke="var(--spent)" strokeWidth={2.5} fill="url(#ftFdFill)" />
+            <Line type="monotone" dataKey="Allocated" stroke="var(--muted)" strokeWidth={2} strokeDasharray="5 4" dot={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
+      {trendMsg && <p className="ft-hint" style={{ marginTop: 8 }}>{trendMsg}</p>}
+    </Modal>
   );
 }
 
 /* ------------------------------------------------------------------ */
 function Dashboard({ funds, months, allExpenses, monthKey, budget, totalAllocated, totalSpent, money }) {
-  const allocByFund = useMemo(() => funds.filter((f) => f.alloc > 0).map((f) => ({ name: f.name, value: f.alloc, color: f.color })), [funds]);
-  const barData = useMemo(() => funds.filter((f) => f.alloc > 0 || f.spent > 0).map((f) => ({ name: f.name, Allocated: f.alloc, Spent: f.spent })), [funds]);
   const trend = useMemo(() => {
     const all = new Set(Object.keys(months)); allExpenses.forEach((e) => all.add(e.monthKey)); all.add(monthKey);
     return [...all].sort().slice(-6).map((k) => ({ name: labelOf(k).split(" ")[0].slice(0, 3), Spent: allExpenses.filter((e) => e.monthKey === k).reduce((s, e) => s + Number(e.amount), 0), Budget: Number(months[k]?.budget || 0) }));
   }, [months, allExpenses, monthKey]);
-  const insights = useMemo(() => buildInsights({ funds, budget, totalAllocated, totalSpent, monthKey, allExpenses, money }), [funds, budget, totalAllocated, totalSpent, monthKey, allExpenses]); // eslint-disable-line
+  const insight = useMemo(() => computeInsights({ funds, budget, totalSpent, monthKey, allExpenses }), [funds, budget, totalSpent, monthKey, allExpenses]); // eslint-disable-line
   const hasData = funds.some((f) => f.alloc > 0) || totalSpent > 0;
+  const kfmt = (v) => (v >= 1000 ? Math.round(v / 100) / 10 + "k" : v);
 
   return (
     <div className="ft-dash">
@@ -529,45 +778,31 @@ function Dashboard({ funds, months, allExpenses, monthKey, budget, totalAllocate
 
       {!hasData ? <div className="ft-empty ft-empty-big">Set a budget, allocate to funds, and log a few expenses — charts and insights appear here.</div> : (
         <>
-          {insights.length > 0 && (
-            <div className="ft-card ft-insights-card"><div className="ft-subhead"><Sparkles size={12} /> Insights</div><ul className="ft-insights">{insights.map((t, i) => <li key={i}>{t}</li>)}</ul></div>
-          )}
-          <div className="ft-dash-charts">
-            <div className="ft-card">
-              <div className="ft-subhead">Allocation by fund</div>
-              {allocByFund.length === 0 ? <p className="ft-muted">No allocations yet.</p> : (
-                <ResponsiveContainer width="100%" height={170}>
-                  <PieChart><Pie data={allocByFund} dataKey="value" nameKey="name" innerRadius={42} outerRadius={70} paddingAngle={2}>{allocByFund.map((d, i) => <Cell key={i} fill={d.color} stroke="none" />)}</Pie><Tooltip formatter={(v) => money(v)} contentStyle={TOOLTIP} /></PieChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-            <div className="ft-card">
-              <div className="ft-subhead">Allocated vs spent</div>
-              {barData.length === 0 ? <p className="ft-muted">No data yet.</p> : (
-                <ResponsiveContainer width="100%" height={170}>
-                  <BarChart data={barData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
-                    <XAxis dataKey="name" tick={{ fontSize: 10, fill: "var(--muted)" }} />
-                    <YAxis tick={{ fontSize: 10, fill: "var(--muted)" }} />
-                    <Tooltip formatter={(v) => money(v)} contentStyle={TOOLTIP} cursor={{ fill: "rgba(255,255,255,.04)" }} />
-                    <Bar dataKey="Allocated" fill={C_ALLOC} radius={[3, 3, 0, 0]} />
-                    <Bar dataKey="Spent" fill={C_SPENT} radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          </div>
+          <InsightsCard insight={insight} money={money} />
+
           <div className="ft-card">
-            <div className="ft-subhead"><TrendingUp size={12} /> Spend over time</div>
-            <ResponsiveContainer width="100%" height={160}>
-              <LineChart data={trend} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+            <div className="ft-subhead">Spending by fund</div>
+            <FundBreakdown funds={funds} money={money} />
+          </div>
+
+          <div className="ft-card">
+            <div className="ft-subhead"><TrendingUp size={12} /> Spend vs budget over time</div>
+            <ResponsiveContainer width="100%" height={185}>
+              <ComposedChart data={trend} margin={{ top: 6, right: 10, left: -14, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="ftSpentFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={C_SPENT} stopOpacity={0.35} />
+                    <stop offset="100%" stopColor={C_SPENT} stopOpacity={0.03} />
+                  </linearGradient>
+                </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 10, fill: "var(--muted)" }} />
-                <YAxis tick={{ fontSize: 10, fill: "var(--muted)" }} />
+                <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--muted)" }} />
+                <YAxis tick={{ fontSize: 11, fill: "var(--muted)" }} width={40} tickFormatter={kfmt} />
                 <Tooltip formatter={(v) => money(v)} contentStyle={TOOLTIP} />
-                <Line type="monotone" dataKey="Budget" stroke={C_BUDGET} strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="Spent" stroke={C_SPENT} strokeWidth={2.5} dot={{ r: 3 }} />
-              </LineChart>
+                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+                <Area type="monotone" dataKey="Spent" stroke={C_SPENT} strokeWidth={2.5} fill="url(#ftSpentFill)" />
+                <Line type="monotone" dataKey="Budget" stroke={C_BUDGET} strokeWidth={2} strokeDasharray="5 4" dot={false} />
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
         </>
@@ -576,72 +811,147 @@ function Dashboard({ funds, months, allExpenses, monthKey, budget, totalAllocate
   );
 }
 
+/* Labeled horizontal breakdown of spend per fund — readable, comparable,
+   with an allocation tick and red bars for over-budget funds. */
+function FundBreakdown({ funds, money }) {
+  const rows = funds.filter((f) => f.alloc > 0 || f.spent > 0).sort((a, b) => (b.spent - a.spent) || (b.alloc - a.alloc));
+  if (!rows.length) return <p className="ft-muted">No spending or allocations yet this month.</p>;
+  const maxScale = Math.max(...rows.map((f) => Math.max(f.spent, f.alloc)), 1);
+  return (
+    <div className="ft-bd">
+      {rows.map((f) => {
+        const over = f.alloc > 0 && f.spent > f.alloc;
+        return (
+          <div key={f.id} className="ft-bd-row">
+            <div className="ft-bd-name" title={f.name}>{f.name}</div>
+            <div className="ft-bd-track">
+              <div className="ft-bd-fill" style={{ width: Math.min(100, (f.spent / maxScale) * 100) + "%", background: over ? "var(--over)" : "var(--spent)" }} />
+              {f.alloc > 0 && <div className="ft-bd-tick" style={{ left: Math.min(100, (f.alloc / maxScale) * 100) + "%" }} title={"Allocated " + money(f.alloc)} />}
+            </div>
+            <div className="ft-bd-amt">{money(f.spent)}</div>
+          </div>
+        );
+      })}
+      <div className="ft-bd-legend">
+        <span><i style={{ background: "var(--spent)" }} />spent</span>
+        <span><i style={{ background: "var(--over)" }} />over budget</span>
+        <span><b className="ft-bd-tickleg" />allocated</span>
+      </div>
+    </div>
+  );
+}
+
 const TOOLTIP = { background: "#222B28", border: "1px solid #2E3A35", borderRadius: 8, color: "#E8EDEA", fontSize: 12 };
 
-const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const dowOf = (iso) => { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).getDay(); };
+/* ------------------------------------------------------------------ */
+/*  Insights engine — actionable: budget pace/projection + notes.     */
+/* ------------------------------------------------------------------ */
+function computeInsights({ funds, budget, totalSpent, monthKey, allExpenses }) {
+  const [y, m] = monthKey.split("-").map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const phase = monthKey < todayKey ? "past" : monthKey > todayKey ? "future" : "current";
+  const todayDay = new Date().getDate();
+  const elapsed = phase === "past" ? daysInMonth : phase === "future" ? 0 : Math.min(todayDay, daysInMonth);
+  const elapsedFrac = daysInMonth ? elapsed / daysInMonth : 1;
 
-/* This-month budget insights */
-function monthInsights({ funds, budget, totalAllocated, totalSpent, monthKey, allExpenses, money }) {
-  const out = [];
-  if (budget > 0 && totalAllocated > budget) out.push(`Allocated ${money(totalAllocated - budget)} more than your budget.`);
-  else if (budget > 0 && totalAllocated < budget) out.push(`${money(budget - totalAllocated)} of your budget is still unallocated.`);
-  const over = funds.filter((f) => f.remaining < 0);
-  if (over.length) out.push(`Over budget on: ${over.map((f) => f.name).join(", ")}.`);
-  const top = [...funds].sort((a, b) => b.spent - a.spent)[0];
-  if (top && top.spent > 0) out.push(`Biggest spend this month: ${top.name} at ${money(top.spent)}.`);
-  const prevKey = shiftMonth(monthKey, -1);
-  const prevSpent = allExpenses.filter((e) => e.monthKey === prevKey).reduce((s, e) => s + Number(e.amount), 0);
-  if (prevSpent > 0 && totalSpent > 0) { const diff = Math.round(((totalSpent - prevSpent) / prevSpent) * 100); if (Math.abs(diff) >= 5) out.push(`Spent ${Math.abs(diff)}% ${diff > 0 ? "more" : "less"} than last month so far.`); }
-  if (budget > 0 && totalSpent / budget >= 0.9 && totalSpent <= budget) out.push(`You're at ${Math.round((totalSpent / budget) * 100)}% of your budget.`);
-  return out;
-}
-
-/* Cross-month day-of-week trend insights, drawn from the full history */
-function trendInsights(allExpenses, funds, money) {
-  const r = (n) => money(Math.round(n));
-  const valid = allExpenses.filter((e) => e.date && /^\d{4}-\d{2}-\d{2}$/.test(e.date));
-  if (valid.length < 6) return [];
-  const nameById = {}; funds.forEach((f) => (nameById[f.id] = f.name));
-
-  // per-fund aggregation by weekday
-  const byFund = {};
-  valid.forEach((e) => {
-    const dow = dowOf(e.date), weekend = dow === 0 || dow === 6, amt = Number(e.amount);
-    const f = byFund[e.fundId] = byFund[e.fundId] || { total: 0, count: 0, we: 0, weC: 0, wd: 0, wdC: 0, dow: Array(7).fill(0), dowC: Array(7).fill(0) };
-    f.total += amt; f.count++;
-    if (weekend) { f.we += amt; f.weC++; } else { f.wd += amt; f.wdC++; }
-    f.dow[dow] += amt; f.dowC[dow]++;
-  });
-
-  const out = [];
-  Object.entries(byFund).forEach(([fid, s]) => {
-    const name = nameById[fid]; if (!name || s.count < 5) return;
-    // weekend vs weekday (average per purchase)
-    if (s.weC >= 2 && s.wdC >= 2) {
-      const aWe = s.we / s.weC, aWd = s.wd / s.wdC;
-      if (aWe >= 1.4 * aWd) out.push(`${name}: weekend purchases average ${r(aWe)}, higher than ${r(aWd)} on weekdays.`);
-      else if (aWd >= 1.4 * aWe) out.push(`${name}: weekday purchases average ${r(aWd)}, higher than ${r(aWe)} on weekends.`);
+  // pace / projection block
+  let pace = null;
+  if (budget > 0) {
+    if (phase === "past") {
+      pace = { kind: "final", spentPct: Math.round((totalSpent / budget) * 100), overBy: totalSpent - budget };
+    } else if (phase === "current") {
+      const projected = elapsedFrac > 0 ? totalSpent / elapsedFrac : totalSpent;
+      const spentPct = Math.round((totalSpent / budget) * 100);
+      const elapsedPct = Math.round(elapsedFrac * 100);
+      const tone = projected > budget * 1.02 ? "over" : projected > budget * 0.98 ? "low" : "ok";
+      pace = { kind: "pace", spentPct, elapsedPct, projected, budget, tone };
     }
-    // a single weekday dominating the fund's spend
-    let mi = 0; s.dow.forEach((v, i) => { if (v > s.dow[mi]) mi = i; });
-    const share = s.total > 0 ? s.dow[mi] / s.total : 0;
-    const daysUsed = s.dowC.filter((c) => c > 0).length;
-    if (share >= 0.4 && daysUsed >= 3 && s.dowC[mi] >= 2) out.push(`${name}: ${WEEKDAYS[mi]}s account for ${Math.round(share * 100)}% of its spending.`);
-  });
+  }
 
-  // overall heaviest weekday across all funds
-  const all = Array(7).fill(0); let tot = 0;
-  valid.forEach((e) => { all[dowOf(e.date)] += Number(e.amount); tot += Number(e.amount); });
-  if (tot > 0 && valid.length >= 8) { let mi = 0; all.forEach((v, i) => { if (v > all[mi]) mi = i; }); if (all[mi] / tot >= 0.28) out.push(`Across all funds, ${WEEKDAYS[mi]} is your highest-spend day (${Math.round((all[mi] / tot) * 100)}% of all spending).`); }
+  // prior-month averages for comparison
+  const prevMonths = {};
+  allExpenses.forEach((e) => { if (e.monthKey < monthKey) prevMonths[e.monthKey] = (prevMonths[e.monthKey] || 0) + Number(e.amount); });
+  const prevKeys = Object.keys(prevMonths);
+  const avgPrev = prevKeys.length ? prevKeys.reduce((s, k) => s + prevMonths[k], 0) / prevKeys.length : 0;
 
-  return out.slice(0, 5);
+  const notes = [];
+  // over-budget funds (highest priority)
+  funds.filter((f) => f.remaining < 0).sort((a, b) => a.remaining - b.remaining)
+    .forEach((f) => notes.push({ tone: "over", text: `${f.name} is over by ${fmt(-f.remaining)}.` }));
+
+  // funds pacing to overspend (current month only, not already over)
+  if (phase === "current" && elapsedFrac > 0.15) {
+    funds.filter((f) => f.base > 0 && f.remaining >= 0).forEach((f) => {
+      const proj = f.spent / elapsedFrac;
+      if (proj > f.base * 1.05) notes.push({ tone: "low", text: `${f.name} is on pace to overspend by ~${fmt(proj - f.base)}.` });
+    });
+  }
+
+  // allocation status
+  const allocated = funds.reduce((s, f) => s + f.alloc, 0);
+  if (budget > 0 && allocated > budget) notes.push({ tone: "over", text: `Allocated ${fmt(allocated - budget)} more than your budget.` });
+  else if (budget > 0 && allocated < budget && phase !== "past") notes.push({ tone: "muted", text: `${fmt(budget - allocated)} of your budget isn't allocated yet.` });
+
+  // vs your average month
+  if (avgPrev > 0 && totalSpent > 0) {
+    const diff = Math.round(((totalSpent - avgPrev) / avgPrev) * 100);
+    if (Math.abs(diff) >= 10) notes.push({ tone: diff > 0 ? "low" : "ok", text: `${phase === "current" ? "So far, spending is" : "Spending was"} ${Math.abs(diff)}% ${diff > 0 ? "above" : "below"} your ${prevKeys.length}-month average.` });
+  }
+
+  // biggest expense this month
+  const monthExp = allExpenses.filter((e) => e.monthKey === monthKey);
+  if (monthExp.length) {
+    const big = monthExp.reduce((a, b) => (Number(b.amount) > Number(a.amount) ? b : a));
+    const fname = (funds.find((f) => f.id === big.fundId) || {}).name;
+    notes.push({ tone: "muted", text: `Largest expense: ${big.name} (${fmt(big.amount)})${fname ? ` from ${fname}` : ""}.` });
+  }
+
+  // positive reinforcement
+  if (budget > 0 && !funds.some((f) => f.remaining < 0) && totalSpent <= budget && elapsedFrac > 0.5)
+    notes.push({ tone: "ok", text: "You're within budget on every fund." });
+
+  return { pace, notes: notes.slice(0, 6) };
+
+  function fmt(n) { return "₹" + Math.round(n).toLocaleString("en-IN"); }
 }
 
-function buildInsights(args) {
-  const month = monthInsights(args);
-  const trend = trendInsights(args.allExpenses, args.funds, args.money);
-  return [...month, ...trend].slice(0, 9);
+function InsightsCard({ insight, money }) {
+  const { pace, notes } = insight;
+  const paceColor = pace && pace.kind === "pace" ? (pace.tone === "over" ? "var(--over)" : pace.tone === "low" ? "var(--warn)" : "var(--ok)") : "var(--ok)";
+  return (
+    <div className="ft-card ft-insights-card">
+      <div className="ft-subhead"><Sparkles size={12} /> Insights</div>
+
+      {pace && pace.kind === "pace" && (
+        <div className="ft-pace">
+          <div className="ft-pace-top">
+            <span><strong style={{ color: paceColor }}>{pace.spentPct}%</strong> of budget spent</span>
+            <span className="ft-muted">{pace.elapsedPct}% of month gone</span>
+          </div>
+          <div className="ft-pace-bar">
+            <div className="ft-pace-fill" style={{ width: Math.min(100, pace.spentPct) + "%", background: paceColor }} />
+            <div className="ft-pace-marker" style={{ left: Math.min(100, pace.elapsedPct) + "%" }} title="Where you'd be if spending evenly" />
+          </div>
+          <div className="ft-pace-note" style={{ color: paceColor }}>
+            {pace.tone === "over" ? "Ahead of pace — " : pace.tone === "low" ? "Right on the line — " : "On track — "}
+            projected {money(Math.round(pace.projected))} by month end vs {money(pace.budget)} budget.
+          </div>
+        </div>
+      )}
+      {pace && pace.kind === "final" && (
+        <div className="ft-pace"><div className="ft-pace-note" style={{ color: pace.overBy > 0 ? "var(--over)" : "var(--ok)" }}>
+          Final: spent {pace.spentPct}% of budget{pace.overBy > 0 ? ` — ${money(Math.round(pace.overBy))} over.` : "."}
+        </div></div>
+      )}
+
+      {notes.length > 0 && (
+        <ul className="ft-notes">
+          {notes.map((n, i) => <li key={i} className={"ft-note ft-note-" + n.tone}><span className="ft-note-dot" />{n.text}</li>)}
+        </ul>
+      )}
+      {!pace && notes.length === 0 && <p className="ft-muted">Add a budget and log expenses to see insights.</p>}
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -666,7 +976,7 @@ function Style() {
       .ft-root{
         --canvas:#0E1413; --surface:#19211F; --ink:#E8EDEA; --muted:#8B958F;
         --accent:#4FB89A; --accent-soft:#22332D; --line:#2A332F;
-        --ok:#4FB89A; --warn:#E0A458; --over:#E5795F;
+        --ok:#4FB89A; --warn:#E0A458; --over:#E5795F; --spent:#6EA8E0;
         font-family:'Inter',system-ui,sans-serif; color:var(--ink); background:var(--canvas);
         padding:10px; border-radius:12px; font-feature-settings:'tnum'; -webkit-font-smoothing:antialiased;
         height:100vh; min-height:560px; display:flex; flex-direction:column; gap:8px;
@@ -752,8 +1062,26 @@ function Style() {
 
       .ft-addexp{display:flex;flex-direction:column;gap:7px;margin-bottom:12px;}
       .ft-addexp .ft-row .ft-input{flex:1;}
-      .ft-exp-list{display:flex;flex-direction:column;}
-      .ft-exp{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);}
+      .ft-search{display:flex;align-items:center;gap:6px;margin-bottom:9px;border:1px solid var(--line);border-radius:8px;background:var(--canvas);padding:0 6px;}
+      .ft-search-ic{color:var(--muted);flex:none;}
+      .ft-search-in{border:none;background:transparent;padding:7px 2px;}
+      .ft-search-in:focus{outline:none;}
+      .ft-exp-note{font-size:11px;color:var(--muted);font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+      .ft-merge{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);}
+      .ft-fd-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;}
+      .ft-fd-stats > div{background:var(--canvas);border:1px solid var(--line);border-radius:9px;padding:8px 9px;display:flex;flex-direction:column;gap:3px;}
+      .ft-fd-stats strong{font-family:'Space Grotesk';font-size:13px;}
+      .ft-exp-controls{display:flex;flex-direction:column;gap:7px;margin-bottom:10px;}
+      .ft-chips{display:flex;flex-wrap:wrap;gap:5px;}
+      .ft-chipbtn{display:inline-flex;align-items:center;gap:5px;font-family:'Inter';font-size:11.5px;font-weight:500;padding:4px 9px;border-radius:20px;border:1px solid var(--line);background:var(--canvas);color:var(--muted);cursor:pointer;}
+      .ft-chipbtn i{width:8px;height:8px;border-radius:50%;display:inline-block;}
+      .ft-chipbtn.on{color:var(--ink);border-color:var(--accent);background:var(--accent-soft);}
+      .ft-sort{max-width:150px;align-self:flex-start;}
+      .ft-exp-groups{display:flex;flex-direction:column;gap:12px;}
+      .ft-exp-group{}
+      .ft-exp-grouphead{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);margin-bottom:2px;font-size:13px;}
+      .ft-exp-grouphead strong{font-family:'Space Grotesk';font-size:13.5px;}
+      .ft-exp{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);}
       .ft-exp-mid{flex:1;min-width:0;display:flex;flex-direction:column;}
       .ft-exp-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
       .ft-exp-meta{font-size:11px;}
@@ -766,10 +1094,30 @@ function Style() {
       .ft-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);}
       .ft-stat-value{font-family:'Space Grotesk';font-weight:700;font-size:15.5px;}
       .ft-card{background:var(--canvas);border:1px solid var(--line);border-radius:11px;padding:11px;}
-      .ft-insights-card .ft-insights{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:4px;font-size:13px;line-height:1.45;}
-      .ft-insights li::marker{color:var(--accent);}
-      .ft-dash-charts{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-      @media(max-width:560px){.ft-dash-charts{grid-template-columns:1fr;}}
+      /* insights */
+      .ft-pace{margin-bottom:10px;}
+      .ft-pace-top{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px;}
+      .ft-pace-bar{position:relative;height:9px;background:#111817;border-radius:5px;overflow:visible;}
+      .ft-pace-fill{height:100%;border-radius:5px;transition:width .4s ease;}
+      .ft-pace-marker{position:absolute;top:-3px;width:2px;height:15px;background:var(--ink);border-radius:2px;transform:translateX(-1px);}
+      .ft-pace-note{font-size:12px;margin-top:7px;font-weight:500;}
+      .ft-notes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;}
+      .ft-note{display:flex;gap:8px;align-items:flex-start;font-size:12.7px;line-height:1.4;}
+      .ft-note-dot{width:7px;height:7px;border-radius:50%;margin-top:5px;flex:none;background:var(--muted);}
+      .ft-note-over .ft-note-dot{background:var(--over);}
+      .ft-note-low .ft-note-dot{background:var(--warn);}
+      .ft-note-ok .ft-note-dot{background:var(--ok);}
+      .ft-bd{display:flex;flex-direction:column;gap:8px;}
+      .ft-bd-row{display:grid;grid-template-columns:84px 1fr auto;align-items:center;gap:9px;font-size:12px;}
+      .ft-bd-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink);}
+      .ft-bd-track{position:relative;height:15px;background:#111817;border:1px solid var(--line);border-radius:4px;}
+      .ft-bd-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px;transition:width .4s ease;min-width:2px;}
+      .ft-bd-tick{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--muted);transform:translateX(-1px);border-radius:2px;}
+      .ft-bd-amt{font-family:'Space Grotesk';font-weight:600;font-size:12px;text-align:right;min-width:56px;}
+      .ft-bd-legend{display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:10.5px;color:var(--muted);margin-top:6px;}
+      .ft-bd-legend span{display:inline-flex;align-items:center;}
+      .ft-bd-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;}
+      .ft-bd-tickleg{display:inline-block;width:2px;height:11px;background:var(--muted);margin-right:5px;}
 
       .ft-empty{color:var(--muted);font-size:13px;padding:12px;text-align:center;background:var(--canvas);border:1px solid var(--line);border-radius:9px;line-height:1.45;}
       .ft-empty-big{padding:32px 18px;}
