@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
-  ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid,
+  ComposedChart, Area, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import * as XLSX from "xlsx";
 import {
-  Plus, Wallet, Receipt, LayoutDashboard, ChevronLeft, ChevronRight,
-  Trash2, Save, Layers, Sparkles, Settings, X, TrendingUp, PiggyBank,
+  Plus, Wallet, Receipt, LayoutDashboard, ChevronLeft, ChevronRight, ChevronDown,
+  Trash2, Save, Layers, Settings, X, PiggyBank,
   Pencil, Eye, EyeOff, Download, History, Search, GitMerge,
 } from "lucide-react";
 
@@ -165,7 +165,7 @@ function App({ state, commit, monthKey, setMonthKey }) {
         fullState={state} onRestore={restoreState} />
 
       <div className="ft-grid">
-        <section className="ft-col">
+        <section className="ft-col ft-col-funds">
           <SectionHead icon={<Wallet size={15} />} title="Funds" />
           <FundsPanel funds={fundView} unallocated={unallocated} money={money}
             addFund={addFund} updateFund={updateFund} removeFund={removeFund} mergeFund={mergeFund}
@@ -174,20 +174,22 @@ function App({ state, commit, monthKey, setMonthKey }) {
             deleteTemplate={deleteTemplate} setAllocation={setAllocation} />
         </section>
 
-        <section className="ft-col ft-col-wide">
-          <SectionHead icon={<LayoutDashboard size={15} />} title="Dashboard" />
-          <Dashboard funds={fundView} months={state.months} allExpenses={state.expenses}
-            monthKey={monthKey} budget={Number(month.budget || 0)} totalAllocated={totalAllocated} totalSpent={totalSpent} money={money} />
-        </section>
+        <div className="ft-right">
+          <section className="ft-col ft-col-dash">
+            <SectionHead icon={<LayoutDashboard size={15} />} title="Dashboard" />
+            <Dashboard funds={fundView} months={state.months} allExpenses={state.expenses}
+              monthKey={monthKey} budget={Number(month.budget || 0)} totalAllocated={totalAllocated} totalSpent={totalSpent} money={money} />
+          </section>
 
-        <section className="ft-col">
-          <SectionHead icon={<Receipt size={15} />} title="Expenses" />
-          <ExpensesPanel
-            availableFunds={fundView.filter((f) => f.base > 0 || f.spent > 0)}
-            fundLookup={Object.fromEntries(fundsColored.map((f) => [f.id, { name: f.name, color: f.color }]))}
-            expenses={monthExpenses} money={money}
-            addExpense={addExpense} updateExpense={updateExpense} removeExpense={removeExpense} monthKey={monthKey} />
-        </section>
+          <section className="ft-col ft-col-exp">
+            <SectionHead icon={<Receipt size={15} />} title="Expenses" />
+            <ExpensesPanel
+              availableFunds={fundView.filter((f) => f.base > 0 || f.spent > 0)}
+              fundLookup={Object.fromEntries(fundsColored.map((f) => [f.id, { name: f.name, color: f.color }]))}
+              expenses={monthExpenses} allExpenses={state.expenses} money={money}
+              addExpense={addExpense} updateExpense={updateExpense} removeExpense={removeExpense} monthKey={monthKey} />
+          </section>
+        </div>
       </div>
 
       {showExport && (
@@ -316,7 +318,7 @@ function FundsPanel({ funds, unallocated, money, addFund, updateFund, removeFund
       <div className="ft-fund-list">
         {shown.map((f) => {
           const st = leftState(f);
-          const width = st === "over" ? 100 : (f.base > 0 ? Math.min(100, Math.max(0, (f.remaining / f.base) * 100)) : 0);
+          const pct = f.base > 0 ? Math.round((f.spent / f.base) * 100) : (f.spent > 0 ? 100 : 0);
           const dim = f.base <= 0 && f.spent <= 0;
           return (
             <div key={f.id} className={"ft-fund" + (dim ? " ft-fund-dim" : "")}>
@@ -328,11 +330,16 @@ function FundsPanel({ funds, unallocated, money, addFund, updateFund, removeFund
                   <button className="ft-icon-btn ft-icon-mini" onClick={() => removeFund(f.id)} aria-label="Delete"><Trash2 size={12} /></button>
                 </span>
               </div>
-              <div className="ft-left"><span className={"ft-left-amt ft-amt-" + st}>{money(f.remaining)}</span><span className="ft-left-tag">left</span></div>
-              <div className="ft-bar"><div className="ft-bar-fill" style={{ width: width + "%", background: STATUS_BAR[st] }} /></div>
+              <div className="ft-fund-body">
+                <Ring pct={pct} color={STATUS_BAR[st]} />
+                <div className="ft-fund-info">
+                  <div className="ft-left"><span className={"ft-left-amt ft-amt-" + st}>{money(f.remaining)}</span><span className="ft-left-tag">left</span></div>
+                  <span className="ft-muted ft-fund-sub">{money(f.spent)} of {money(f.base)}{f.accumulating ? ` · +${money(f.carried)} in` : ""}</span>
+                </div>
+              </div>
               <div className="ft-fund-foot">
                 <span className="ft-alloc-edit"><span className="ft-muted">Alloc</span><AllocInput value={f.alloc} onCommit={(v) => setAllocation(f.id, v)} /></span>
-                <span className="ft-muted">{money(f.spent)} spent{f.accumulating ? ` · +${money(f.carried)} in` : ""}</span>
+                <span className="ft-muted">{pct}% spent</span>
               </div>
             </div>
           );
@@ -363,6 +370,19 @@ function FundsPanel({ funds, unallocated, money, addFund, updateFund, removeFund
         <TemplatesModal templates={templates} canSave={funds.some((f) => f.alloc > 0)} onSave={saveTemplate} onApply={(t) => { applyTemplate(t); setModal(null); }} onDelete={deleteTemplate} onClose={() => setModal(null)} />
       )}
     </div>
+  );
+}
+
+function Ring({ pct, color, size = 46 }) {
+  const sw = 5, r = (size - sw) / 2, c = 2 * Math.PI * r;
+  const off = c * (1 - Math.min(1, (pct || 0) / 100));
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="ft-ring">
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#111817" strokeWidth={sw} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={sw} strokeLinecap="round"
+        strokeDasharray={c} strokeDashoffset={off} transform={`rotate(-90 ${size / 2} ${size / 2})`} style={{ transition: "stroke-dashoffset .5s ease" }} />
+      <text x="50%" y="50%" textAnchor="middle" dominantBaseline="central" className="ft-ring-txt" fill={color}>{pct}%</text>
+    </svg>
   );
 }
 
@@ -533,7 +553,7 @@ function ExportModal({ funds, months, allExpenses, money, monthKey, onClose }) {
 }
 
 /* ------------------------------------------------------------------ */
-function ExpensesPanel({ availableFunds, fundLookup, expenses, money, addExpense, updateExpense, removeExpense, monthKey }) {
+function ExpensesPanel({ availableFunds, fundLookup, expenses, allExpenses, money, addExpense, updateExpense, removeExpense, monthKey }) {
   const [y, m] = monthKey.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
   const minDate = `${monthKey}-01`;
@@ -549,9 +569,29 @@ function ExpensesPanel({ availableFunds, fundLookup, expenses, money, addExpense
   const [selected, setSelected] = useState(null); // null = all funds shown
   const [sort, setSort] = useState("date_desc");
   const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(() => new Set()); // expanded named groups
 
   useEffect(() => { if (!availableFunds.find((f) => f.id === fundId)) setFundId(availableFunds[0]?.id || ""); }, [availableFunds]); // eslint-disable-line
   useEffect(() => { setDate(defaultDate()); setSelected(null); }, [monthKey]); // eslint-disable-line
+
+  // suggestions from the full history: name -> most-used fund + last amount
+  const nameMeta = {};
+  allExpenses.forEach((e) => {
+    const k = (e.name || "").trim().toLowerCase(); if (!k) return;
+    const mm = nameMeta[k] = nameMeta[k] || { display: e.name.trim(), fundCount: {}, lastAmount: e.amount, lastDate: e.date };
+    mm.fundCount[e.fundId] = (mm.fundCount[e.fundId] || 0) + 1;
+    if (e.date >= mm.lastDate) { mm.lastDate = e.date; mm.lastAmount = e.amount; }
+  });
+  const suggestions = Object.values(nameMeta).map((mm) => mm.display).sort((a, b) => a.localeCompare(b));
+
+  const onName = (val) => {
+    setName(val);
+    const mm = nameMeta[val.trim().toLowerCase()];
+    if (mm) {
+      const topFund = Object.entries(mm.fundCount).sort((a, b) => b[1] - a[1])[0]?.[0];
+      if (topFund && availableFunds.some((f) => f.id === topFund)) setFundId(topFund);
+    }
+  };
 
   const submit = () => {
     if (!name.trim() || !amount || !fundId) return;
@@ -560,20 +600,22 @@ function ExpensesPanel({ availableFunds, fundLookup, expenses, money, addExpense
     setName(""); setAmount(""); setNote("");
   };
 
-  // search then group
+  // search → fund groups → named units
   const q = query.trim().toLowerCase();
   const filtered = q ? expenses.filter((e) => (e.name || "").toLowerCase().includes(q) || (e.note || "").toLowerCase().includes(q)) : expenses;
+  const byDate = (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
   const gmap = {};
   filtered.forEach((e) => { (gmap[e.fundId] = gmap[e.fundId] || []).push(e); });
-  const cmp = {
-    date_desc: (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0),
-    date_asc: (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0),
-    amt_desc: (a, b) => Number(b.amount) - Number(a.amount),
-    amt_asc: (a, b) => Number(a.amount) - Number(b.amount),
-  }[sort];
+
   let groups = Object.entries(gmap).map(([fid, items]) => {
     const info = fundLookup[fid] || { name: "(deleted fund)", color: "#666" };
-    return { fid, name: info.name, color: info.color, items: [...items].sort(cmp), total: items.reduce((s, e) => s + Number(e.amount), 0), count: items.length };
+    // group this fund's items by name
+    const nm = {};
+    items.forEach((e) => { const k = (e.name || "").trim().toLowerCase(); (nm[k] = nm[k] || { key: fid + "|" + k, name: e.name.trim(), items: [] }).items.push(e); });
+    let units = Object.values(nm).map((u) => ({ ...u, items: [...u.items].sort(byDate), total: u.items.reduce((s, e) => s + Number(e.amount), 0), count: u.items.length, latest: u.items.reduce((d, e) => (e.date > d ? e.date : d), "") }));
+    // order units by selected sort
+    units.sort(sort.startsWith("amt") ? (a, b) => (sort === "amt_desc" ? b.total - a.total : a.total - b.total) : (a, b) => (sort === "date_desc" ? (a.latest < b.latest ? 1 : -1) : (a.latest < b.latest ? -1 : 1)));
+    return { fid, name: info.name, color: info.color, units, total: items.reduce((s, e) => s + Number(e.amount), 0), count: items.length };
   }).sort((a, b) => b.total - a.total);
 
   const allFids = groups.map((g) => g.fid);
@@ -585,22 +627,30 @@ function ExpensesPanel({ availableFunds, fundLookup, expenses, money, addExpense
     return cur.size === allFids.length ? null : cur;
   });
   const shownGroups = groups.filter((g) => isSel(g.fid));
+  const toggleOpen = (key) => setOpen((prev) => { const c = new Set(prev); c.has(key) ? c.delete(key) : c.add(key); return c; });
+
+  const entryRow = (e, sub = false) => (
+    <div key={e.id} className={"ft-lg-row" + (sub ? " ft-lg-sub" : "")}>
+      <span className="ft-lg-name">{e.name}{e.note && <span className="ft-lg-note"> — {e.note}</span>}</span>
+      <span className="ft-lg-date">{e.date.slice(5)}</span>
+      <span className="ft-lg-amt">{money(e.amount)}</span>
+      <button className="ft-icon-btn ft-icon-mini" onClick={() => setEditing(e)} aria-label="Edit"><Pencil size={11} /></button>
+      <button className="ft-icon-btn ft-icon-mini" onClick={() => removeExpense(e.id)} aria-label="Delete"><X size={12} /></button>
+    </div>
+  );
 
   return (
     <div className="ft-panel">
       <div className="ft-addexp">
-        {availableFunds.length === 0 ? <div className="ft-empty">No funds are allocated this month. Allocate a fund in the Funds section, then log expenses here.</div> : (
+        {availableFunds.length === 0 ? <div className="ft-empty" style={{ width: "100%" }}>No funds are allocated this month. Allocate a fund in the Funds section, then log expenses here.</div> : (
           <>
-            <input className="ft-input ft-input-sm" placeholder="What was it for?" value={name} onChange={(e) => setName(e.target.value)} />
-            <div className="ft-row">
-              <input className="ft-input ft-input-sm" type="number" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} />
-              <input className="ft-input ft-input-sm" type="date" value={date} min={minDate} max={maxDate} onChange={(e) => setDate(e.target.value)} title="Date is limited to the selected month" />
-            </div>
-            <input className="ft-input ft-input-sm" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
-            <div className="ft-row">
-              <select className="ft-input ft-input-sm" value={fundId} onChange={(e) => setFundId(e.target.value)}>{availableFunds.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
-              <button className="ft-btn ft-btn-primary ft-btn-sm" onClick={submit}><Plus size={14} /> Add</button>
-            </div>
+            <input className="ft-input ft-input-sm ft-ax-name" placeholder="What was it for?" value={name} list="ft-name-suggestions" onChange={(e) => onName(e.target.value)} />
+            <datalist id="ft-name-suggestions">{suggestions.map((s) => <option key={s} value={s} />)}</datalist>
+            <input className="ft-input ft-input-sm ft-ax-amt" type="number" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} />
+            <input className="ft-input ft-input-sm ft-ax-date" type="date" value={date} min={minDate} max={maxDate} onChange={(e) => setDate(e.target.value)} title="Date is limited to the selected month" />
+            <input className="ft-input ft-input-sm ft-ax-note" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+            <select className="ft-input ft-input-sm ft-ax-fund" value={fundId} onChange={(e) => setFundId(e.target.value)}>{availableFunds.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
+            <button className="ft-btn ft-btn-primary ft-btn-sm ft-ax-add" onClick={submit}><Plus size={14} /> Add</button>
           </>
         )}
       </div>
@@ -615,10 +665,10 @@ function ExpensesPanel({ availableFunds, fundLookup, expenses, money, addExpense
 
           <div className="ft-exp-controls">
             <div className="ft-chips">
-              <button className={"ft-chipbtn" + (allOn ? " on" : "")} onClick={() => setSelected(null)}>All</button>
+              <button className={"ft-chipbtn" + (allOn ? " on" : "")} onClick={() => setSelected(null)}><span className="ft-chip-label">All</span></button>
               {groups.map((g) => (
-                <button key={g.fid} className={"ft-chipbtn" + (isSel(g.fid) ? " on" : "")} onClick={() => toggleFund(g.fid)}>
-                  <i style={{ background: g.color }} />{g.name}
+                <button key={g.fid} className={"ft-chipbtn" + (isSel(g.fid) ? " on" : "")} onClick={() => toggleFund(g.fid)} title={g.name}>
+                  <i style={{ background: g.color }} /><span className="ft-chip-label">{g.name}</span>
                 </button>
               ))}
             </div>
@@ -630,27 +680,30 @@ function ExpensesPanel({ availableFunds, fundLookup, expenses, money, addExpense
             </select>
           </div>
 
-          <div className="ft-exp-groups">
-            {filtered.length === 0 && <div className="ft-empty">No expenses match "{query}".</div>}
-            {filtered.length > 0 && shownGroups.length === 0 && <div className="ft-empty">No funds selected.</div>}
+          <div className="ft-ledger">
+            {filtered.length === 0 && <div className="ft-empty" style={{ columnSpan: "all" }}>No expenses match "{query}".</div>}
+            {filtered.length > 0 && shownGroups.length === 0 && <div className="ft-empty" style={{ columnSpan: "all" }}>No funds selected.</div>}
             {shownGroups.map((g) => (
-              <div key={g.fid} className="ft-exp-group">
-                <div className="ft-exp-grouphead">
+              <div key={g.fid} className="ft-lg-group">
+                <div className="ft-lg-head">
                   <span className="ft-fund-name"><i className="ft-dot" style={{ background: g.color }} />{g.name}<span className="ft-muted" style={{ fontWeight: 400 }}> · {g.count}</span></span>
                   <strong>{money(g.total)}</strong>
                 </div>
-                {g.items.map((e) => (
-                  <div key={e.id} className="ft-exp">
-                    <div className="ft-exp-mid">
-                      <span className="ft-exp-name">{e.name}</span>
-                      {e.note && <span className="ft-exp-note">{e.note}</span>}
-                      <span className="ft-muted ft-exp-meta">{e.date.slice(5)}</span>
+                {g.units.map((u) => {
+                  if (u.count === 1) return entryRow(u.items[0]);
+                  const isOpen = open.has(u.key) || !!q;
+                  return (
+                    <div key={u.key} className="ft-lg-recwrap">
+                      <div className="ft-lg-row ft-lg-rec" role="button" tabIndex={0} onClick={() => toggleOpen(u.key)}>
+                        <span className="ft-lg-name ft-lg-recname">{isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}<span className="ft-lg-nametext">{u.name}</span><span className="ft-nx-badge">×{u.count}</span></span>
+                        <span className="ft-lg-date" />
+                        <span className="ft-lg-amt">{money(u.total)}</span>
+                        <span /><span />
+                      </div>
+                      {isOpen && u.items.map((e) => entryRow(e, true))}
                     </div>
-                    <span className="ft-exp-amt">{money(e.amount)}</span>
-                    <button className="ft-icon-btn ft-icon-mini" onClick={() => setEditing(e)} aria-label="Edit"><Pencil size={11} /></button>
-                    <button className="ft-icon-btn ft-icon-mini" onClick={() => removeExpense(e.id)} aria-label="Delete"><X size={12} /></button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ))}
           </div>
@@ -759,83 +812,130 @@ function FundDetailModal({ fund, allExpenses, months, money, onClose }) {
 
 /* ------------------------------------------------------------------ */
 function Dashboard({ funds, months, allExpenses, monthKey, budget, totalAllocated, totalSpent, money }) {
-  const trend = useMemo(() => {
-    const all = new Set(Object.keys(months)); allExpenses.forEach((e) => all.add(e.monthKey)); all.add(monthKey);
-    return [...all].sort().slice(-6).map((k) => ({ name: labelOf(k).split(" ")[0].slice(0, 3), Spent: allExpenses.filter((e) => e.monthKey === k).reduce((s, e) => s + Number(e.amount), 0), Budget: Number(months[k]?.budget || 0) }));
-  }, [months, allExpenses, monthKey]);
-  const insight = useMemo(() => computeInsights({ funds, budget, totalSpent, monthKey, allExpenses }), [funds, budget, totalSpent, monthKey, allExpenses]); // eslint-disable-line
-  const hasData = funds.some((f) => f.alloc > 0) || totalSpent > 0;
-  const kfmt = (v) => (v >= 1000 ? Math.round(v / 100) / 10 + "k" : v);
-
+  const hasData = funds.some((f) => f.alloc > 0) || totalSpent > 0 || allExpenses.length > 0;
   return (
     <div className="ft-dash">
-      <div className="ft-stat-row">
-        <Stat label="Budget" value={money(budget)} />
-        <Stat label="Allocated" value={money(totalAllocated)} />
-        <Stat label="Spent" value={money(totalSpent)} />
-        <Stat label="% spent" value={budget > 0 ? Math.round((totalSpent / budget) * 100) + "%" : "—"} />
-      </div>
-
-      {!hasData ? <div className="ft-empty ft-empty-big">Set a budget, allocate to funds, and log a few expenses — charts and insights appear here.</div> : (
-        <>
-          <InsightsCard insight={insight} money={money} />
-
-          <div className="ft-card">
-            <div className="ft-subhead">Spending by fund</div>
-            <FundBreakdown funds={funds} money={money} />
-          </div>
-
-          <div className="ft-card">
-            <div className="ft-subhead"><TrendingUp size={12} /> Spend vs budget over time</div>
-            <ResponsiveContainer width="100%" height={185}>
-              <ComposedChart data={trend} margin={{ top: 6, right: 10, left: -14, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="ftSpentFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={C_SPENT} stopOpacity={0.35} />
-                    <stop offset="100%" stopColor={C_SPENT} stopOpacity={0.03} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--muted)" }} />
-                <YAxis tick={{ fontSize: 11, fill: "var(--muted)" }} width={40} tickFormatter={kfmt} />
-                <Tooltip formatter={(v) => money(v)} contentStyle={TOOLTIP} />
-                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
-                <Area type="monotone" dataKey="Spent" stroke={C_SPENT} strokeWidth={2.5} fill="url(#ftSpentFill)" />
-                <Line type="monotone" dataKey="Budget" stroke={C_BUDGET} strokeWidth={2} strokeDasharray="5 4" dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        </>
-      )}
+      {!hasData
+        ? <div className="ft-empty ft-empty-big">Set a budget, allocate to funds, and log expenses — your analysis appears here.</div>
+        : <UnifiedDashboard funds={funds} months={months} allExpenses={allExpenses} monthKey={monthKey} budget={budget} money={money} />}
     </div>
   );
 }
 
-/* Labeled horizontal breakdown of spend per fund — readable, comparable,
-   with an allocation tick and red bars for over-budget funds. */
-function FundBreakdown({ funds, money }) {
-  const rows = funds.filter((f) => f.alloc > 0 || f.spent > 0).sort((a, b) => (b.spent - a.spent) || (b.alloc - a.alloc));
-  if (!rows.length) return <p className="ft-muted">No spending or allocations yet this month.</p>;
-  const maxScale = Math.max(...rows.map((f) => Math.max(f.spent, f.alloc)), 1);
+const shortMonth = (k) => { const [yy, mm] = k.split("-"); return new Date(Number(yy), Number(mm) - 1, 1).toLocaleString(undefined, { month: "short" }) + " " + yy.slice(2); };
+
+/* One filterable analysis panel: pick any funds (or all) and see this month's
+   status plus the spend-vs-reference trend for exactly that selection. */
+function UnifiedDashboard({ funds, months, allExpenses, monthKey, budget, money }) {
+  const [sel, setSel] = useState(null); // null = all
+  const kfmt = (v) => (v >= 1000 ? Math.round(v / 100) / 10 + "k" : v);
+
+  const pool = funds.filter((f) => allExpenses.some((e) => e.fundId === f.id) || Object.values(months).some((m) => Number(m.allocations?.[f.id] || 0) > 0));
+  const allSel = sel === null;
+  const inSel = (fid) => (allSel ? pool.some((f) => f.id === fid) : sel.has(fid));
+  const selIds = allSel ? pool.map((f) => f.id) : [...sel];
+  const toggle = (fid) => setSel((prev) => {
+    const cur = prev === null ? new Set(pool.map((f) => f.id)) : new Set(prev);
+    if (cur.has(fid)) cur.delete(fid); else cur.add(fid);
+    return cur.size === pool.length ? null : cur;
+  });
+
+  const refLabel = allSel ? "Budget" : "Allocated";
+  const spentThis = allExpenses.filter((e) => e.monthKey === monthKey && inSel(e.fundId)).reduce((s, e) => s + Number(e.amount), 0);
+  const allocThis = selIds.reduce((s, fid) => s + Number(months[monthKey]?.allocations?.[fid] || 0), 0);
+  const ref = allSel ? Number(budget || 0) : allocThis;
+  const remaining = ref - spentThis;
+  const over = ref > 0 && spentThis > ref;
+  const pct = ref > 0 ? Math.round((spentThis / ref) * 100) : null;
+  const color = over ? "var(--over)" : (ref > 0 && spentThis / ref > 0.85 ? "var(--warn)" : "var(--ok)");
+  const spentPct = ref > 0 ? Math.min(100, (spentThis / ref) * 100) : 0;
+
+  const keys = new Set(Object.keys(months)); allExpenses.forEach((e) => keys.add(e.monthKey)); keys.add(monthKey);
+  const series = [...keys].sort().slice(-12).map((k) => ({
+    name: shortMonth(k),
+    Spent: allExpenses.filter((e) => e.monthKey === k && inSel(e.fundId)).reduce((s, e) => s + Number(e.amount), 0),
+    Ref: allSel ? Number(months[k]?.budget || 0) : selIds.reduce((s, fid) => s + Number(months[k]?.allocations?.[fid] || 0), 0),
+  }));
+  const activeCount = series.filter((s) => s.Spent > 0).length;
+  const avg = activeCount ? Math.round(series.reduce((s, m) => s + m.Spent, 0) / activeCount) : 0;
+
+  // month-over-month delta for the selection
+  const prevKey = shiftMonth(monthKey, -1);
+  const prevSpent = allExpenses.filter((e) => e.monthKey === prevKey && inSel(e.fundId)).reduce((s, e) => s + Number(e.amount), 0);
+  const delta = prevSpent > 0 ? Math.round(((spentThis - prevSpent) / prevSpent) * 100) : null;
+
+  // filter-aware composition for this month
+  const monthSel = allExpenses.filter((e) => e.monthKey === monthKey && inSel(e.fundId));
+  let comp = [];
+  if (selIds.length === 1) {
+    const nm = {};
+    monthSel.forEach((e) => { const k = (e.name || "").trim().toLowerCase(); (nm[k] = nm[k] || { label: e.name.trim(), total: 0, color: "var(--spent)" }).total += Number(e.amount); });
+    comp = Object.values(nm);
+  } else {
+    const fm = {};
+    monthSel.forEach((e) => { (fm[e.fundId] = fm[e.fundId] || { total: 0 }).total += Number(e.amount); });
+    comp = Object.entries(fm).map(([fid, v]) => { const f = funds.find((x) => x.id === fid) || {}; return { label: f.name || "?", total: v.total, color: f.color || "#666" }; });
+  }
+  comp = comp.sort((a, b) => b.total - a.total).slice(0, 6);
+  const compMax = Math.max(...comp.map((c) => c.total), 1);
+  const compTitle = selIds.length === 1 ? "By expense this month" : "By fund this month";
+
   return (
-    <div className="ft-bd">
-      {rows.map((f) => {
-        const over = f.alloc > 0 && f.spent > f.alloc;
-        return (
-          <div key={f.id} className="ft-bd-row">
-            <div className="ft-bd-name" title={f.name}>{f.name}</div>
-            <div className="ft-bd-track">
-              <div className="ft-bd-fill" style={{ width: Math.min(100, (f.spent / maxScale) * 100) + "%", background: over ? "var(--over)" : "var(--spent)" }} />
-              {f.alloc > 0 && <div className="ft-bd-tick" style={{ left: Math.min(100, (f.alloc / maxScale) * 100) + "%" }} title={"Allocated " + money(f.alloc)} />}
+    <div className="ft-card ft-uni">
+      <div className="ft-chips ft-uni-filter">
+        <button className={"ft-chipbtn" + (allSel ? " on" : "")} onClick={() => setSel(null)}><span className="ft-chip-label">All funds</span></button>
+        {pool.map((f) => (
+          <button key={f.id} className={"ft-chipbtn" + (inSel(f.id) ? " on" : "")} onClick={() => toggle(f.id)} title={f.name}>
+            <i style={{ background: f.color }} /><span className="ft-chip-label">{f.name}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="ft-ov-top">
+        <div className="ft-ov-head">
+          <span className="ft-ov-spent">{money(spentThis)}</span>
+          <span className="ft-ov-of">spent of {money(ref)} this month{delta != null && <span className="ft-delta" style={{ color: delta > 0 ? "var(--over)" : "var(--ok)" }}>{delta > 0 ? "▲" : delta < 0 ? "▼" : ""} {Math.abs(delta)}% vs last month</span>}</span>
+        </div>
+        <div className="ft-ov-pct" style={{ color }}>{pct == null ? "\u2014" : pct + "%"}</div>
+      </div>
+      <div className="ft-ov-bar"><div className="ft-ov-fill" style={{ width: spentPct + "%", background: color }} /></div>
+      <div className="ft-ov-stats">
+        <div><span className="ft-stat-label">{refLabel}</span><strong>{money(ref)}</strong></div>
+        <div><span className="ft-stat-label">{over ? "Over by" : "Remaining"}</span><strong style={{ color: over ? "var(--over)" : "var(--ok)" }}>{money(Math.abs(remaining))}</strong></div>
+        <div><span className="ft-stat-label">Avg / mo</span><strong>{money(avg)}</strong></div>
+      </div>
+
+      <div className="ft-uni-chart">
+        <ResponsiveContainer width="100%" height={200}>
+          <ComposedChart data={series} margin={{ top: 6, right: 10, left: -14, bottom: 0 }}>
+            <defs>
+              <linearGradient id="ftUniFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={C_SPENT} stopOpacity={0.35} />
+                <stop offset="100%" stopColor={C_SPENT} stopOpacity={0.03} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--muted)" }} />
+            <YAxis tick={{ fontSize: 11, fill: "var(--muted)" }} width={40} tickFormatter={kfmt} />
+            <Tooltip formatter={(v) => money(v)} contentStyle={TOOLTIP} />
+            <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+            <Area type="monotone" dataKey="Spent" name="Spent" stroke={C_SPENT} strokeWidth={2.5} fill="url(#ftUniFill)" />
+            <Line type="monotone" dataKey="Ref" name={refLabel} stroke={C_BUDGET} strokeWidth={2} strokeDasharray="5 4" dot={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="ft-comp">
+        <div className="ft-comp-head">{compTitle}</div>
+        {comp.length === 0 ? <p className="ft-muted" style={{ fontSize: 12.5, margin: 0 }}>No spending this month for this selection.</p> : (
+          comp.map((c, i) => (
+            <div key={i} className="ft-rank-row">
+              <div className="ft-rank-name" title={c.label}>{c.label}</div>
+              <div className="ft-rank-track"><div className="ft-rank-fill" style={{ width: Math.max(2, (c.total / compMax) * 100) + "%", background: c.color }} /></div>
+              <div className="ft-rank-amt">{money(c.total)}</div>
             </div>
-            <div className="ft-bd-amt">{money(f.spent)}</div>
-          </div>
-        );
-      })}
-      <div className="ft-bd-legend">
-        <span><i style={{ background: "var(--spent)" }} />spent</span>
-        <span><i style={{ background: "var(--over)" }} />over budget</span>
-        <span><b className="ft-bd-tickleg" />allocated</span>
+          ))
+        )}
       </div>
     </div>
   );
@@ -844,119 +944,7 @@ function FundBreakdown({ funds, money }) {
 const TOOLTIP = { background: "#222B28", border: "1px solid #2E3A35", borderRadius: 8, color: "#E8EDEA", fontSize: 12 };
 
 /* ------------------------------------------------------------------ */
-/*  Insights engine — actionable: budget pace/projection + notes.     */
-/* ------------------------------------------------------------------ */
-function computeInsights({ funds, budget, totalSpent, monthKey, allExpenses }) {
-  const [y, m] = monthKey.split("-").map(Number);
-  const daysInMonth = new Date(y, m, 0).getDate();
-  const phase = monthKey < todayKey ? "past" : monthKey > todayKey ? "future" : "current";
-  const todayDay = new Date().getDate();
-  const elapsed = phase === "past" ? daysInMonth : phase === "future" ? 0 : Math.min(todayDay, daysInMonth);
-  const elapsedFrac = daysInMonth ? elapsed / daysInMonth : 1;
-
-  // pace / projection block
-  let pace = null;
-  if (budget > 0) {
-    if (phase === "past") {
-      pace = { kind: "final", spentPct: Math.round((totalSpent / budget) * 100), overBy: totalSpent - budget };
-    } else if (phase === "current") {
-      const projected = elapsedFrac > 0 ? totalSpent / elapsedFrac : totalSpent;
-      const spentPct = Math.round((totalSpent / budget) * 100);
-      const elapsedPct = Math.round(elapsedFrac * 100);
-      const tone = projected > budget * 1.02 ? "over" : projected > budget * 0.98 ? "low" : "ok";
-      pace = { kind: "pace", spentPct, elapsedPct, projected, budget, tone };
-    }
-  }
-
-  // prior-month averages for comparison
-  const prevMonths = {};
-  allExpenses.forEach((e) => { if (e.monthKey < monthKey) prevMonths[e.monthKey] = (prevMonths[e.monthKey] || 0) + Number(e.amount); });
-  const prevKeys = Object.keys(prevMonths);
-  const avgPrev = prevKeys.length ? prevKeys.reduce((s, k) => s + prevMonths[k], 0) / prevKeys.length : 0;
-
-  const notes = [];
-  // over-budget funds (highest priority)
-  funds.filter((f) => f.remaining < 0).sort((a, b) => a.remaining - b.remaining)
-    .forEach((f) => notes.push({ tone: "over", text: `${f.name} is over by ${fmt(-f.remaining)}.` }));
-
-  // funds pacing to overspend (current month only, not already over)
-  if (phase === "current" && elapsedFrac > 0.15) {
-    funds.filter((f) => f.base > 0 && f.remaining >= 0).forEach((f) => {
-      const proj = f.spent / elapsedFrac;
-      if (proj > f.base * 1.05) notes.push({ tone: "low", text: `${f.name} is on pace to overspend by ~${fmt(proj - f.base)}.` });
-    });
-  }
-
-  // allocation status
-  const allocated = funds.reduce((s, f) => s + f.alloc, 0);
-  if (budget > 0 && allocated > budget) notes.push({ tone: "over", text: `Allocated ${fmt(allocated - budget)} more than your budget.` });
-  else if (budget > 0 && allocated < budget && phase !== "past") notes.push({ tone: "muted", text: `${fmt(budget - allocated)} of your budget isn't allocated yet.` });
-
-  // vs your average month
-  if (avgPrev > 0 && totalSpent > 0) {
-    const diff = Math.round(((totalSpent - avgPrev) / avgPrev) * 100);
-    if (Math.abs(diff) >= 10) notes.push({ tone: diff > 0 ? "low" : "ok", text: `${phase === "current" ? "So far, spending is" : "Spending was"} ${Math.abs(diff)}% ${diff > 0 ? "above" : "below"} your ${prevKeys.length}-month average.` });
-  }
-
-  // biggest expense this month
-  const monthExp = allExpenses.filter((e) => e.monthKey === monthKey);
-  if (monthExp.length) {
-    const big = monthExp.reduce((a, b) => (Number(b.amount) > Number(a.amount) ? b : a));
-    const fname = (funds.find((f) => f.id === big.fundId) || {}).name;
-    notes.push({ tone: "muted", text: `Largest expense: ${big.name} (${fmt(big.amount)})${fname ? ` from ${fname}` : ""}.` });
-  }
-
-  // positive reinforcement
-  if (budget > 0 && !funds.some((f) => f.remaining < 0) && totalSpent <= budget && elapsedFrac > 0.5)
-    notes.push({ tone: "ok", text: "You're within budget on every fund." });
-
-  return { pace, notes: notes.slice(0, 6) };
-
-  function fmt(n) { return "₹" + Math.round(n).toLocaleString("en-IN"); }
-}
-
-function InsightsCard({ insight, money }) {
-  const { pace, notes } = insight;
-  const paceColor = pace && pace.kind === "pace" ? (pace.tone === "over" ? "var(--over)" : pace.tone === "low" ? "var(--warn)" : "var(--ok)") : "var(--ok)";
-  return (
-    <div className="ft-card ft-insights-card">
-      <div className="ft-subhead"><Sparkles size={12} /> Insights</div>
-
-      {pace && pace.kind === "pace" && (
-        <div className="ft-pace">
-          <div className="ft-pace-top">
-            <span><strong style={{ color: paceColor }}>{pace.spentPct}%</strong> of budget spent</span>
-            <span className="ft-muted">{pace.elapsedPct}% of month gone</span>
-          </div>
-          <div className="ft-pace-bar">
-            <div className="ft-pace-fill" style={{ width: Math.min(100, pace.spentPct) + "%", background: paceColor }} />
-            <div className="ft-pace-marker" style={{ left: Math.min(100, pace.elapsedPct) + "%" }} title="Where you'd be if spending evenly" />
-          </div>
-          <div className="ft-pace-note" style={{ color: paceColor }}>
-            {pace.tone === "over" ? "Ahead of pace — " : pace.tone === "low" ? "Right on the line — " : "On track — "}
-            projected {money(Math.round(pace.projected))} by month end vs {money(pace.budget)} budget.
-          </div>
-        </div>
-      )}
-      {pace && pace.kind === "final" && (
-        <div className="ft-pace"><div className="ft-pace-note" style={{ color: pace.overBy > 0 ? "var(--over)" : "var(--ok)" }}>
-          Final: spent {pace.spentPct}% of budget{pace.overBy > 0 ? ` — ${money(Math.round(pace.overBy))} over.` : "."}
-        </div></div>
-      )}
-
-      {notes.length > 0 && (
-        <ul className="ft-notes">
-          {notes.map((n, i) => <li key={i} className={"ft-note ft-note-" + n.tone}><span className="ft-note-dot" />{n.text}</li>)}
-        </ul>
-      )}
-      {!pace && notes.length === 0 && <p className="ft-muted">Add a budget and log expenses to see insights.</p>}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 function SectionHead({ icon, title }) { return <div className="ft-sec-head">{icon}<span>{title}</span></div>; }
-function Stat({ label, value }) { return <div className="ft-stat"><span className="ft-stat-label">{label}</span><span className="ft-stat-value">{value}</span></div>; }
 function Modal({ title, children, onClose }) {
   return (
     <div className="ft-modal-overlay" onClick={onClose}>
@@ -1002,20 +990,22 @@ function Style() {
       .ft-alloc-seg{height:100%;transition:width .35s ease;}
       .ft-alloc-rest{background:repeating-linear-gradient(45deg,#26302C,#26302C 5px,#161E1C 5px,#161E1C 10px);}
 
-      .ft-grid{flex:1;min-height:0;display:grid;grid-template-columns:minmax(210px,1fr) minmax(320px,1.7fr) minmax(210px,1fr);gap:9px;}
-      .ft-col{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:11px 12px;overflow-y:auto;min-height:0;}
+      .ft-grid{flex:1;min-height:0;display:grid;grid-template-columns:minmax(232px,300px) 1fr;gap:9px;}
+      .ft-right{display:flex;flex-direction:column;gap:9px;min-height:0;min-width:0;overflow-y:auto;}
+      .ft-right::-webkit-scrollbar{width:7px;} .ft-right::-webkit-scrollbar-thumb{background:#2E3A35;border-radius:4px;}
+      .ft-col{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 13px;overflow-y:auto;min-height:0;box-shadow:0 2px 8px rgba(0,0,0,.22);}
       .ft-col::-webkit-scrollbar{width:7px;} .ft-col::-webkit-scrollbar-thumb{background:#2E3A35;border-radius:4px;}
-      @media(max-width:979px){
+      .ft-col-dash{flex:0 0 auto;overflow:visible;}
+      .ft-col-exp{flex:0 0 auto;overflow:visible;}
+      @media(max-width:900px){
         .ft-root{height:auto;}
-        .ft-grid{grid-template-columns:1fr 1fr;}
-        .ft-grid > section:nth-child(1){order:1;}
-        .ft-grid > section:nth-child(3){order:2;}
-        .ft-col-wide{order:3;grid-column:1 / -1;}
-        .ft-col{overflow:visible;}
+        .ft-grid{grid-template-columns:1fr;}
+        .ft-right{overflow:visible;}
+        .ft-col,.ft-col-dash,.ft-col-exp{overflow:visible;flex:none;}
       }
-      @media(max-width:600px){ .ft-grid{grid-template-columns:1fr;} }
 
-      .ft-sec-head{display:flex;align-items:center;gap:7px;font-family:'Space Grotesk';font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);padding-bottom:8px;margin-bottom:9px;border-bottom:1px solid var(--line);position:sticky;top:-11px;background:var(--surface);}
+      .ft-sec-head{display:flex;align-items:center;gap:7px;font-family:'Space Grotesk';font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);padding-bottom:8px;margin-bottom:10px;border-bottom:1px solid var(--line);position:sticky;top:-12px;background:var(--surface);z-index:3;}
+      .ft-sec-head svg{color:var(--accent);}
 
       .ft-btn{display:inline-flex;align-items:center;gap:5px;font-family:'Inter';font-size:13px;font-weight:500;padding:7px 11px;border-radius:8px;border:1px solid var(--line);background:var(--canvas);color:var(--ink);cursor:pointer;transition:background .15s;}
       .ft-btn:hover{background:#222B28;}
@@ -1032,6 +1022,7 @@ function Style() {
       .ft-input-sm{font-size:13px;padding:6px 8px;}
       .ft-input-tiny{width:96px;padding:4px 7px;font-size:13px;}
       .ft-input::placeholder{color:#5C655F;}
+      .ft-input:-webkit-autofill,.ft-input:-webkit-autofill:hover,.ft-input:-webkit-autofill:focus{-webkit-text-fill-color:var(--ink);-webkit-box-shadow:0 0 0 1000px var(--canvas) inset;caret-color:var(--ink);transition:background-color 9999s ease 0s;}
       .ft-row{display:flex;gap:7px;align-items:center;}
       .ft-row-actions{margin-bottom:11px;flex-wrap:wrap;}
       .ft-add-cat{margin-top:8px;}
@@ -1039,20 +1030,24 @@ function Style() {
       .ft-check{display:flex;gap:7px;align-items:flex-start;font-size:13px;margin-top:14px;cursor:pointer;line-height:1.4;}
       .ft-check input{margin-top:2px;accent-color:var(--accent);}
 
-      .ft-fund-list{display:flex;flex-direction:column;gap:9px;}
-      .ft-fund{background:var(--canvas);border:1px solid var(--line);border-radius:10px;padding:9px 10px;}
-      .ft-fund-dim{opacity:.6;}
+      .ft-fund-list{display:flex;flex-direction:column;gap:10px;}
+      .ft-fund{background:var(--canvas);border:1px solid var(--line);border-radius:12px;padding:11px 12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.015);transition:border-color .15s,transform .15s;}
+      .ft-fund:hover{border-color:#39443F;transform:translateY(-1px);}
+      .ft-fund-dim{opacity:.55;}
       .ft-fund-top{display:flex;justify-content:space-between;align-items:center;}
       .ft-fund-name{display:flex;align-items:center;gap:6px;font-weight:600;font-size:13.5px;}
       .ft-fund-tools{display:flex;gap:1px;}
       .ft-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none;}
       .ft-accum-ic{color:var(--muted);}
-      .ft-left{display:flex;align-items:baseline;gap:5px;margin:3px 0 6px;}
-      .ft-left-amt{font-family:'Space Grotesk';font-weight:700;font-size:23px;line-height:1;}
+      .ft-fund-body{display:flex;align-items:center;gap:12px;margin:9px 0 8px;}
+      .ft-ring{flex:none;}
+      .ft-ring-txt{font-family:'Space Grotesk';font-weight:700;font-size:12px;}
+      .ft-fund-info{display:flex;flex-direction:column;gap:2px;min-width:0;}
+      .ft-left{display:flex;align-items:baseline;gap:5px;}
+      .ft-left-amt{font-family:'Space Grotesk';font-weight:700;font-size:22px;line-height:1;}
       .ft-left-tag{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);}
-      .ft-bar{height:7px;background:#111817;border-radius:4px;overflow:hidden;margin-bottom:6px;}
-      .ft-bar-fill{height:100%;border-radius:4px;transition:width .4s ease,background .2s;}
-      .ft-fund-foot{display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:6px;}
+      .ft-fund-sub{font-size:11.5px;}
+      .ft-fund-foot{display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:6px;padding-top:8px;border-top:1px solid var(--line);}
       .ft-alloc-edit{display:flex;align-items:center;gap:6px;}
       .ft-toggle{display:inline-flex;align-items:center;gap:6px;margin-top:10px;background:none;border:none;color:var(--accent);font-family:'Inter';font-size:12.5px;font-weight:500;cursor:pointer;padding:4px 0;}
       .ft-toggle:hover{text-decoration:underline;}
@@ -1060,64 +1055,76 @@ function Style() {
       .ft-accum-row{display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;}
       .ft-subhead{display:flex;align-items:center;gap:6px;font-family:'Space Grotesk';font-weight:600;font-size:12.5px;margin-bottom:9px;}
 
-      .ft-addexp{display:flex;flex-direction:column;gap:7px;margin-bottom:12px;}
-      .ft-addexp .ft-row .ft-input{flex:1;}
-      .ft-search{display:flex;align-items:center;gap:6px;margin-bottom:9px;border:1px solid var(--line);border-radius:8px;background:var(--canvas);padding:0 6px;}
+      .ft-addexp{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:13px;}
+      .ft-ax-name{flex:3 1 150px;} .ft-ax-note{flex:3 1 150px;}
+      .ft-ax-amt{flex:0 1 110px;} .ft-ax-date{flex:0 1 150px;}
+      .ft-ax-fund{flex:2 1 150px;} .ft-ax-add{flex:0 0 auto;}
+      .ft-search{display:flex;align-items:center;gap:6px;margin-bottom:9px;border:1px solid var(--line);border-radius:8px;background:var(--canvas);padding:0 6px;max-width:360px;}
       .ft-search-ic{color:var(--muted);flex:none;}
       .ft-search-in{border:none;background:transparent;padding:7px 2px;}
       .ft-search-in:focus{outline:none;}
-      .ft-exp-note{font-size:11px;color:var(--muted);font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+      .ft-nx-badge{flex:none;font-size:10px;font-weight:600;color:var(--accent);background:var(--accent-soft);border-radius:20px;padding:1px 6px;}
       .ft-merge{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);}
       .ft-fd-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;}
       .ft-fd-stats > div{background:var(--canvas);border:1px solid var(--line);border-radius:9px;padding:8px 9px;display:flex;flex-direction:column;gap:3px;}
       .ft-fd-stats strong{font-family:'Space Grotesk';font-size:13px;}
       .ft-exp-controls{display:flex;flex-direction:column;gap:7px;margin-bottom:10px;}
-      .ft-chips{display:flex;flex-wrap:wrap;gap:5px;}
-      .ft-chipbtn{display:inline-flex;align-items:center;gap:5px;font-family:'Inter';font-size:11.5px;font-weight:500;padding:4px 9px;border-radius:20px;border:1px solid var(--line);background:var(--canvas);color:var(--muted);cursor:pointer;}
-      .ft-chipbtn i{width:8px;height:8px;border-radius:50%;display:inline-block;}
+      .ft-chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(94px,1fr));gap:6px;}
+      .ft-chipbtn{display:flex;align-items:center;gap:5px;min-width:0;font-family:'Inter';font-size:11.5px;font-weight:500;padding:5px 9px;border-radius:8px;border:1px solid var(--line);background:var(--canvas);color:var(--muted);cursor:pointer;transition:border-color .15s,color .15s;}
+      .ft-chipbtn:hover{border-color:#39443F;}
+      .ft-chipbtn i{width:8px;height:8px;border-radius:50%;flex:none;}
+      .ft-chip-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
       .ft-chipbtn.on{color:var(--ink);border-color:var(--accent);background:var(--accent-soft);}
       .ft-sort{max-width:150px;align-self:flex-start;}
-      .ft-exp-groups{display:flex;flex-direction:column;gap:12px;}
-      .ft-exp-group{}
-      .ft-exp-grouphead{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);margin-bottom:2px;font-size:13px;}
-      .ft-exp-grouphead strong{font-family:'Space Grotesk';font-size:13.5px;}
-      .ft-exp{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);}
-      .ft-exp-mid{flex:1;min-width:0;display:flex;flex-direction:column;}
-      .ft-exp-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-      .ft-exp-meta{font-size:11px;}
-      .ft-exp-amt{font-family:'Space Grotesk';font-weight:600;font-size:13.5px;}
+      /* dense ledger that balances across columns */
+      .ft-ledger{column-width:320px;column-gap:22px;}
+      .ft-ledger .ft-empty{break-inside:avoid;}
+      .ft-lg-group{break-inside:avoid;-webkit-column-break-inside:avoid;margin:0 0 16px;}
+      .ft-lg-head{display:flex;justify-content:space-between;align-items:center;padding:0 0 5px;margin-bottom:3px;border-bottom:1px solid var(--line);}
+      .ft-lg-head .ft-fund-name{font-size:13px;font-weight:600;}
+      .ft-lg-head strong{font-family:'Space Grotesk';font-size:13.5px;}
+      .ft-lg-row{display:grid;grid-template-columns:1fr auto 70px 22px 22px;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #1B2320;font-size:12.5px;}
+      .ft-lg-group > .ft-lg-row:last-child,.ft-lg-recwrap:last-child .ft-lg-row:last-child{border-bottom:none;}
+      .ft-lg-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;}
+      .ft-lg-note{color:var(--muted);font-style:italic;font-weight:400;}
+      .ft-lg-date{font-size:10.5px;color:var(--muted);white-space:nowrap;}
+      .ft-lg-amt{font-family:'Space Grotesk';font-weight:600;font-size:12.5px;text-align:right;}
+      .ft-lg-rec{cursor:pointer;}
+      .ft-lg-rec:hover .ft-lg-nametext{color:var(--accent);}
+      .ft-lg-recname{display:flex;align-items:center;gap:5px;}
+      .ft-lg-recname svg{color:var(--muted);flex:none;}
+      .ft-lg-nametext{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+      .ft-lg-sub{background:rgba(255,255,255,.012);}
+      .ft-lg-sub .ft-lg-name{padding-left:16px;font-weight:400;}
 
       .ft-dash{display:flex;flex-direction:column;gap:10px;}
-      .ft-stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
-      @media(max-width:420px){.ft-stat-row{grid-template-columns:repeat(2,1fr);}}
-      .ft-stat{background:var(--canvas);border:1px solid var(--line);border-radius:9px;padding:8px 10px;display:flex;flex-direction:column;gap:2px;}
       .ft-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);}
-      .ft-stat-value{font-family:'Space Grotesk';font-weight:700;font-size:15.5px;}
-      .ft-card{background:var(--canvas);border:1px solid var(--line);border-radius:11px;padding:11px;}
-      /* insights */
-      .ft-pace{margin-bottom:10px;}
-      .ft-pace-top{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px;}
-      .ft-pace-bar{position:relative;height:9px;background:#111817;border-radius:5px;overflow:visible;}
-      .ft-pace-fill{height:100%;border-radius:5px;transition:width .4s ease;}
-      .ft-pace-marker{position:absolute;top:-3px;width:2px;height:15px;background:var(--ink);border-radius:2px;transform:translateX(-1px);}
-      .ft-pace-note{font-size:12px;margin-top:7px;font-weight:500;}
-      .ft-notes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;}
-      .ft-note{display:flex;gap:8px;align-items:flex-start;font-size:12.7px;line-height:1.4;}
-      .ft-note-dot{width:7px;height:7px;border-radius:50%;margin-top:5px;flex:none;background:var(--muted);}
-      .ft-note-over .ft-note-dot{background:var(--over);}
-      .ft-note-low .ft-note-dot{background:var(--warn);}
-      .ft-note-ok .ft-note-dot{background:var(--ok);}
-      .ft-bd{display:flex;flex-direction:column;gap:8px;}
-      .ft-bd-row{display:grid;grid-template-columns:84px 1fr auto;align-items:center;gap:9px;font-size:12px;}
-      .ft-bd-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink);}
-      .ft-bd-track{position:relative;height:15px;background:#111817;border:1px solid var(--line);border-radius:4px;}
-      .ft-bd-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px;transition:width .4s ease;min-width:2px;}
-      .ft-bd-tick{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--muted);transform:translateX(-1px);border-radius:2px;}
-      .ft-bd-amt{font-family:'Space Grotesk';font-weight:600;font-size:12px;text-align:right;min-width:56px;}
-      .ft-bd-legend{display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:10.5px;color:var(--muted);margin-top:6px;}
-      .ft-bd-legend span{display:inline-flex;align-items:center;}
-      .ft-bd-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;}
-      .ft-bd-tickleg{display:inline-block;width:2px;height:11px;background:var(--muted);margin-right:5px;}
+      .ft-card{background:var(--canvas);border:1px solid var(--line);border-radius:12px;padding:12px;box-shadow:inset 0 1px 0 rgba(255,255,255,.015);}
+      /* budget overview */
+      .ft-ov{padding:13px 13px 12px;}
+      .ft-ov-top{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:9px;}
+      .ft-ov-head{display:flex;flex-direction:column;gap:1px;}
+      .ft-ov-spent{font-family:'Space Grotesk';font-weight:700;font-size:26px;line-height:1;}
+      .ft-ov-of{font-size:11.5px;color:var(--muted);}
+      .ft-ov-pct{font-family:'Space Grotesk';font-weight:700;font-size:22px;line-height:1;}
+      .ft-ov-bar{position:relative;height:10px;background:#111817;border:1px solid var(--line);border-radius:5px;margin-bottom:11px;}
+      .ft-ov-fill{position:absolute;left:0;top:0;bottom:0;border-radius:4px;transition:width .4s ease;min-width:2px;}
+      .ft-ov-tick{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink);transform:translateX(-1px);border-radius:2px;}
+      .ft-ov-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+      .ft-ov-stats > div{display:flex;flex-direction:column;gap:2px;}
+      .ft-ov-stats strong{font-family:'Space Grotesk';font-weight:700;font-size:14px;}
+      /* unified dashboard panel */
+      .ft-uni{padding:14px;}
+      .ft-uni-filter{margin-bottom:13px;}
+      .ft-uni-chart{margin-top:12px;}
+      .ft-delta{margin-left:7px;font-weight:600;white-space:nowrap;}
+      .ft-comp{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:7px;}
+      .ft-comp-head{font-family:'Space Grotesk';font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:2px;}
+      .ft-rank-row{display:grid;grid-template-columns:90px 1fr auto;align-items:center;gap:9px;font-size:12px;}
+      .ft-rank-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink);}
+      .ft-rank-track{height:13px;background:#111817;border:1px solid var(--line);border-radius:4px;overflow:hidden;}
+      .ft-rank-fill{height:100%;border-radius:3px;transition:width .4s ease;}
+      .ft-rank-amt{font-family:'Space Grotesk';font-weight:600;font-size:12px;text-align:right;min-width:58px;}
 
       .ft-empty{color:var(--muted);font-size:13px;padding:12px;text-align:center;background:var(--canvas);border:1px solid var(--line);border-radius:9px;line-height:1.45;}
       .ft-empty-big{padding:32px 18px;}
